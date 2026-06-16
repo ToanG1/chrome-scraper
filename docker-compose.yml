@@ -1,0 +1,10 @@
+services:
+  serp-scraper:
+    build: .
+    ports:
+      - "3000:3000"
+      - "6080:6080"   # noVNC web UI
+    shm_size: "2gb"        # Chrome needs this — default 64MB crashes it
+    environment:
+      - PORT=3000
+    restart: unless-stopped
