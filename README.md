@@ -11,7 +11,7 @@ A production-ready Google SERP scraper built on **raw Chrome DevTools Protocol (
 - **Stealth JS** — masks `navigator.webdriver`, spoofs WebGL renderer, hardware concurrency, device memory
 - **CAPTCHA detection** — detects `/sorry/` redirects, resets session, throws typed `CaptchaError`
 - **Geolocation** — auto-detects public IP coordinates via ip-api.com, injects via `Emulation.setGeolocationOverride`
-- **noVNC** — watch the browser live at `http://localhost:6080`
+- **noVNC** — watch the browser live at `http://localhost:6080/vnc.html`
 - **TypeScript** — fully typed, runs via `tsx` with no build step
 - **Hono** HTTP server with `/search` and `/search/batch` endpoints
 
@@ -40,7 +40,7 @@ curl -X POST http://localhost:3000/search/batch \
   -d '{"queries": ["react tutorial", "typescript generics"], "pages": 2}'
 ```
 
-Open **http://localhost:6080** in your browser to watch Chrome in real time.
+Open **http://localhost:6080/vnc.html** in your browser to watch Chrome in real time.
 
 ## API
 
