@@ -113,12 +113,31 @@ test/
 
 ### CAPTCHA handling
 
-When Google redirects to `/sorry/`, the scraper:
-- Detects the URL after each navigation
-- Closes and resets the session (fresh tab on next request)
-- Throws `CaptchaError` which returns HTTP 500 with `{ "error": "CAPTCHA detected at: ..." }`
+Google flags automation by storing a CAPTCHA token in the Chrome profile cookies (`/tmp/chrome-profile`). Once flagged, every subsequent request to Google immediately redirects to `/sorry/` — regardless of query or timing.
 
-The stress test catches `CaptchaError` and pauses 3 minutes before continuing.
+**Discovery:** Restarting the Docker container (which wipes `/tmp/chrome-profile`) always cleared the CAPTCHA. This confirmed the flag lives in browser cookies, not the server-side IP.
+
+**Automatic resolution flow:**
+
+```
+1. After every page navigation, check document.location.href via CDP
+2. URL contains /sorry/ → CAPTCHA detected
+3. Set _captchaHit = true, close tab, throw CaptchaError (HTTP 500)
+4. Next request calls getSession() → sees _captchaHit = true
+5. Network.clearBrowserCookies + Network.clearBrowserCache via CDP
+   (equivalent to docker compose down && up — wipes the CAPTCHA flag)
+6. _captchaHit = false, fresh geolocation + stealth JS injected
+7. Scraping continues normally
+```
+
+This was verified live: 8 CAPTCHAs were hit and auto-resolved in a single 20-keyword batch run, confirmed in Docker logs:
+
+```
+[captcha] cleared cookies + cache — fresh profile
+[geo] resolved location: 10.822, 106.6257
+```
+
+The stress test additionally pauses 3 minutes after a `CaptchaError` before retrying, giving Google's rate-limiter time to cool down.
 
 ## Stress Test
 
