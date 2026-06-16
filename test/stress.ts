@@ -1,9 +1,9 @@
 /**
  * Stress test: 100 keywords × 5 pages each
  *
- * Pacing:
- *   - 0–60s  random pause between each keyword in a group
- *   - 60–120s random pause between groups of 10
+ * Pacing (light):
+ *   - 5–15s  random pause between each keyword
+ *   - 30–60s random pause between groups of 10
  *
  * Run: npx tsx test/stress.ts
  */
@@ -41,7 +41,10 @@ async function search(query: string): Promise<SearchResult> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, pages: PAGES }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}) as { error?: string });
+    throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+  }
   return res.json() as Promise<SearchResult>;
 }
 
@@ -49,7 +52,14 @@ async function run(): Promise<void> {
   log(`Starting stress test — ${KEYWORDS.length} keywords, ${PAGES} pages each`);
   log(`API: ${API_URL}`);
 
-  const results: { query: string; ok: boolean; elapsed: number; found?: number; error?: string }[] = [];
+  const results: {
+    query: string;
+    ok: boolean;
+    captcha: boolean;
+    elapsed: number;
+    found?: number;
+    error?: string;
+  }[] = [];
   const globalStart = Date.now();
 
   const groups: string[][] = [];
@@ -70,21 +80,40 @@ async function run(): Promise<void> {
         log(`[${keywordIndex}/100] "${query}"`);
         const data = await search(query);
         const elapsed = Date.now() - t0;
-        results.push({ query, ok: true, elapsed, found: data.totalResults });
+        results.push({ query, ok: true, captcha: false, elapsed, found: data.totalResults });
         log(`  ✓ ${data.totalResults ?? 0} results in ${fmt(elapsed)}`);
       } catch (err) {
         const elapsed = Date.now() - t0;
-        results.push({ query, ok: false, elapsed, error: (err as Error).message });
-        log(`  ✗ ${(err as Error).message} (${fmt(elapsed)})`);
+        const msg = (err as Error).message;
+        const isCaptcha = msg.toLowerCase().includes("captcha");
+        results.push({ query, ok: false, captcha: isCaptcha, elapsed, error: msg });
+        if (isCaptcha) {
+          log(`  ⚠ CAPTCHA — pausing 3 minutes before continuing...`);
+          await sleep(180000);
+        } else {
+          log(`  ✗ ${msg} (${fmt(elapsed)})`);
+        }
       }
 
-      // pauses disabled for fast test run
+      const isLastOverall = gi === groups.length - 1 && ki === group.length - 1;
+      if (!isLastOverall) {
+        if (ki === group.length - 1) {
+          const pause = rand(30000, 60000);
+          log(`  → Group done. Pausing ${fmt(pause)} before next group...`);
+          await sleep(pause);
+        } else {
+          const pause = rand(5000, 15000);
+          log(`  → Pausing ${fmt(pause)}...`);
+          await sleep(pause);
+        }
+      }
     }
   }
 
   const totalTime = Date.now() - globalStart;
   const succeeded = results.filter((r) => r.ok);
-  const failed = results.filter((r) => !r.ok);
+  const captchas = results.filter((r) => r.captcha);
+  const failed = results.filter((r) => !r.ok && !r.captcha);
   const avgTime = succeeded.length
     ? Math.round(succeeded.reduce((s, r) => s + r.elapsed, 0) / succeeded.length)
     : 0;
@@ -96,14 +125,19 @@ async function run(): Promise<void> {
 ╠═══════════════════════════════════════════╣
 ║  Total keywords   : ${String(results.length).padEnd(22)}║
 ║  Succeeded        : ${String(succeeded.length).padEnd(22)}║
-║  Failed           : ${String(failed.length).padEnd(22)}║
+║  CAPTCHA hits     : ${String(captchas.length).padEnd(22)}║
+║  Other failures   : ${String(failed.length).padEnd(22)}║
 ║  Total results    : ${String(totalFound).padEnd(22)}║
 ║  Avg time/keyword : ${fmt(avgTime).padEnd(22)}║
 ║  Total wall time  : ${fmt(totalTime).padEnd(22)}║
 ╚═══════════════════════════════════════════╝`);
 
+  if (captchas.length > 0) {
+    console.log("\nCAPTCHA hits:");
+    captchas.forEach((r) => console.log(`  - "${r.query}"`));
+  }
   if (failed.length > 0) {
-    console.log("\nFailed:");
+    console.log("\nOther failures:");
     failed.forEach((r) => console.log(`  - "${r.query}": ${r.error}`));
   }
 }
