@@ -47,6 +47,7 @@ export class CaptchaError extends Error {
 let _session: CDPSession | null = null;
 let _tabId: string | null = null;
 let _isFirstSearch = true;
+let _captchaHit = false;
 
 async function getSession(): Promise<CDPSession> {
   if (_session?.isConnected()) return _session;
@@ -60,6 +61,18 @@ async function getSession(): Promise<CDPSession> {
   _session = await connectTab(tab.webSocketDebuggerUrl);
 
   await _session.send("Page.enable");
+  await _session.send("Network.enable");
+
+  // CAPTCHA stores its flag in Chrome cookies. Clearing them on a new session
+  // after a CAPTCHA hit replicates what `docker compose down && up --build` does
+  // (wipes the Chrome profile at /tmp/chrome-profile).
+  if (_captchaHit) {
+    await _session.send("Network.clearBrowserCookies");
+    await _session.send("Network.clearBrowserCache");
+    _captchaHit = false;
+    console.log("[captcha] cleared cookies + cache — fresh profile");
+  }
+
   await _session.send("Page.addScriptToEvaluateOnNewDocument", { source: STEALTH_JS });
 
   const loc = await fetchIpLocation();
@@ -80,6 +93,7 @@ export async function closeSession(): Promise<void> {
   if (_session) { _session.close(); _session = null; }
   if (_tabId) { await closeTab(_tabId); _tabId = null; }
   _isFirstSearch = true;
+  // _captchaHit is intentionally NOT reset here — it must survive until the next getSession()
 }
 
 // ── CAPTCHA detection ─────────────────────────────────────────────────────────
@@ -95,6 +109,7 @@ async function getCurrentUrl(session: CDPSession): Promise<string> {
 async function assertNoCaptcha(session: CDPSession): Promise<void> {
   const url = await getCurrentUrl(session);
   if (url.includes("/sorry/") || url.includes("google.com/sorry")) {
+    _captchaHit = true;
     await closeSession();
     throw new CaptchaError(url);
   }
