@@ -2,6 +2,8 @@
 set -e
 
 # 1. Start virtual display
+# Remove stale lock files left behind by docker compose restart (not a full recreation)
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 Xvfb :99 -screen 0 1366x768x24 -ac &
 export DISPLAY=:99
 sleep 1
