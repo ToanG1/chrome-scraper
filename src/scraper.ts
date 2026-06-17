@@ -124,27 +124,14 @@ export async function fetchUrl(url: string, proxy?: string, warmUpQuery?: string
   return getPageHtml(session);
 }
 
-// Type a query into Google's search box and submit — mimics a real user searching.
+// Navigate to a plain search URL first — same as typing the keyword in the omnibox.
+// A simple google.co.jp/search?q=... has no extra params so Google doesn't flag it.
+// After this, navigating to the full MEO/SEO URL looks like a natural view switch.
 async function humanSearch(session: CDPSession, query: string): Promise<void> {
-  await navigateAndWait(session, "https://www.google.co.jp");
+  await navigateAndWait(session, `https://www.google.co.jp/search?q=${encodeURIComponent(query)}`);
   await sleep(rand(800, 1500));
-
-  const inputRect = await getElementRect(session, 'textarea[name="q"], input[name="q"]');
-  if (inputRect) {
-    await mouseClick(session, inputRect.cx, inputRect.cy);
-    await sleep(rand(300, 700));
-  }
-
-  for (const char of query) {
-    await session.send("Input.dispatchKeyEvent", { type: "char", text: char });
-    await sleep(rand(50, 180));
-  }
-
-  await sleep(rand(300, 600));
-  await session.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Return", code: "Enter", windowsVirtualKeyCode: 13 });
-  await session.send("Input.dispatchKeyEvent", { type: "keyUp",   key: "Return", code: "Enter", windowsVirtualKeyCode: 13 });
-  await session.waitForEvent("Page.loadEventFired", 15000).catch(() => {});
-  await sleep(rand(800, 1500));
+  await scrollPage(session);
+  await sleep(rand(500, 1000));
 }
 
 async function fetchUrlWithProxy(url: string, proxy: string): Promise<string> {
