@@ -19,7 +19,7 @@ const API_URL = process.env.API_URL ?? "http://localhost:3000";
 function meoUrl(query: string, lat: number, lon: number, hl = "ja", gl = "jp"): string {
   const span = "0.04,0.065";
   return (
-    `http://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
+    `https://www.google.com/search?q=${encodeURIComponent(query)}` +
     `&hl=${hl}&gl=${gl}&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1` +
     `&fll=${lat},${lon}&fspn=${span}&fz=14` +
     `&sll=${lat},${lon}&sspn=${span}&sz=14&stq=1&cs=0`
@@ -28,7 +28,7 @@ function meoUrl(query: string, lat: number, lon: number, hl = "ja", gl = "jp"): 
 
 function seoUrl(query: string, lat: number, lon: number, hl = "ja", gl = "jp"): string {
   return (
-    `http://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
+    `https://www.google.com/search?q=${encodeURIComponent(query)}` +
     `&hl=${hl}&gl=${gl}&num=100&brd_scroll=1&pws=0&ie=UTF-8&oe=UTF-8` +
     `&sll=${lat},${lon}`
   );

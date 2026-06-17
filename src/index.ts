@@ -82,7 +82,7 @@ app.post("/fetch/meo", async (c) => {
 
   const span = "0.04,0.065";
   const url =
-    `http://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
+    `https://www.google.com/search?q=${encodeURIComponent(query)}` +
     `&hl=ja&gl=jp&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1` +
     `&fll=${lat},${lon}&fspn=${span}&fz=14` +
     `&sll=${lat},${lon}&sspn=${span}&sz=14&stq=1&cs=0`;
@@ -107,7 +107,7 @@ app.post("/fetch/seo", async (c) => {
   if (!lat || !lon) return c.json({ error: "lat and lon are required" }, 400);
 
   const url =
-    `http://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
+    `https://www.google.com/search?q=${encodeURIComponent(query)}` +
     `&hl=ja&gl=jp&num=100&brd_scroll=1&pws=0&ie=UTF-8&oe=UTF-8` +
     `&sll=${lat},${lon}`;
 

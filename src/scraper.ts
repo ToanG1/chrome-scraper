@@ -124,11 +124,13 @@ export async function fetchUrl(url: string, proxy?: string, warmUpQuery?: string
   return getPageHtml(session);
 }
 
-// Navigate to a plain search URL first — same as typing the keyword in the omnibox.
-// A simple google.co.jp/search?q=... has no extra params so Google doesn't flag it.
-// After this, navigating to the full MEO/SEO URL looks like a natural view switch.
+// Mimic omnibox search: land on google.com homepage first so the subsequent
+// search request carries Referer: https://www.google.com — same as a real user.
+// sourceid=chrome&ie=UTF-8 match what Chrome appends on an omnibox search.
 async function humanSearch(session: CDPSession, query: string): Promise<void> {
-  await navigateAndWait(session, `https://www.google.co.jp/search?q=${encodeURIComponent(query)}`);
+  await navigateAndWait(session, "https://www.google.com");
+  await sleep(rand(800, 1500));
+  await navigateAndWait(session, `https://www.google.com/search?q=${encodeURIComponent(query)}&sourceid=chrome&ie=UTF-8`);
   await sleep(rand(800, 1500));
   await scrollPage(session);
   await sleep(rand(500, 1000));
