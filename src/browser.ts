@@ -2,6 +2,16 @@ import { WebSocket } from "ws";
 
 const CHROME = process.env.CHROME_DEBUG_URL ?? "http://localhost:9222";
 
+let _browserSession: CDPSession | null = null;
+
+async function getBrowserSession(): Promise<CDPSession> {
+  if (_browserSession?.isConnected()) return _browserSession;
+  const res = await fetch(`${CHROME}/json/version`);
+  const info = (await res.json()) as { webSocketDebuggerUrl: string };
+  _browserSession = await connectTab(info.webSocketDebuggerUrl);
+  return _browserSession;
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface TabInfo {
@@ -106,6 +116,38 @@ export async function openTab(): Promise<TabInfo> {
   const res = await fetch(`${CHROME}/json/new`, { method: "PUT" });
   if (!res.ok) throw new Error(`Cannot open tab: ${res.status}`);
   return res.json() as Promise<TabInfo>;
+}
+
+// Open a tab in an isolated browser context that routes through proxyServer.
+// Each call creates a fresh context — no shared cookies/cache with the main session.
+// The caller is responsible for calling disposeBrowserContext(contextId) when done.
+export async function openTabWithProxy(
+  proxyServer: string,
+): Promise<{ tab: TabInfo; contextId: string }> {
+  const browser = await getBrowserSession();
+
+  const ctx = (await browser.send("Target.createBrowserContext", {
+    proxyServer,
+    proxyBypassList: "<-loopback>",
+  })) as { browserContextId: string };
+
+  const target = (await browser.send("Target.createTarget", {
+    url: "about:blank",
+    browserContextId: ctx.browserContextId,
+  })) as { targetId: string };
+
+  const tabs = (await fetch(`${CHROME}/json/list`).then((r) =>
+    r.json(),
+  )) as Array<{ id: string; webSocketDebuggerUrl: string }>;
+  const tab = tabs.find((t) => t.id === target.targetId);
+  if (!tab) throw new Error("Proxied tab not found after creation");
+
+  return { tab: { id: tab.id, webSocketDebuggerUrl: tab.webSocketDebuggerUrl }, contextId: ctx.browserContextId };
+}
+
+export async function disposeBrowserContext(contextId: string): Promise<void> {
+  const browser = await getBrowserSession();
+  await browser.send("Target.disposeBrowserContext", { browserContextId: contextId }).catch(() => {});
 }
 
 export async function closeTab(tabId: string): Promise<void> {

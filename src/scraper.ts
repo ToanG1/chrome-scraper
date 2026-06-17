@@ -2,6 +2,8 @@ import {
   openTab,
   closeTab,
   connectTab,
+  openTabWithProxy,
+  disposeBrowserContext,
   CDPSession,
   mouseClick,
   getElementRect,
@@ -63,14 +65,19 @@ async function getSession(): Promise<CDPSession> {
   await _session.send("Page.enable");
   await _session.send("Network.enable");
 
-  // CAPTCHA stores its flag in Chrome cookies. Clearing them on a new session
-  // after a CAPTCHA hit replicates what `docker compose down && up --build` does
-  // (wipes the Chrome profile at /tmp/chrome-profile).
+  // Full CAPTCHA recovery — replicates `docker compose down && up` (wipes /tmp/chrome-profile).
+  // Cookies + cache alone are not enough; Google also uses localStorage/IndexedDB.
   if (_captchaHit) {
     await _session.send("Network.clearBrowserCookies");
     await _session.send("Network.clearBrowserCache");
+    for (const origin of ["https://www.google.com", "https://www.google.co.jp"]) {
+      await _session.send("Storage.clearDataForOrigin", {
+        origin,
+        storageTypes: "all",
+      }).catch(() => {});
+    }
     _captchaHit = false;
-    console.log("[captcha] cleared cookies + cache — fresh profile");
+    console.log("[captcha] cleared cookies + cache + storage — fresh profile");
   }
 
   await _session.send("Page.addScriptToEvaluateOnNewDocument", { source: STEALTH_JS });
@@ -89,16 +96,19 @@ async function getSession(): Promise<CDPSession> {
   return _session;
 }
 
-// Fetch any URL in the persistent Chrome session and return raw HTML.
-// Useful for custom SERP URLs (MEO, SEO with uule, num=100, etc.).
-export async function fetchUrl(url: string): Promise<string> {
+// Fetch any URL and return raw HTML.
+// Pass proxy="http://user:pass@host:port" to route through a specific IP —
+// this creates an isolated browser context so it never touches the main session.
+// Without proxy, uses the persistent session (server's own IP).
+export async function fetchUrl(url: string, proxy?: string): Promise<string> {
+  if (proxy) return fetchUrlWithProxy(url, proxy);
+
   const session = await getSession();
 
   if (_isFirstSearch) {
     await navigateAndWait(session, url);
     _isFirstSearch = false;
   } else {
-    // Click somewhere neutral before navigating — keeps interaction history natural
     await mouseClick(session, rand(200, 600), rand(200, 500));
     await sleep(rand(300, 700));
     await navigateAndWait(session, url);
@@ -109,6 +119,26 @@ export async function fetchUrl(url: string): Promise<string> {
   await scrollPage(session);
   await sleep(rand(400, 800));
   return getPageHtml(session);
+}
+
+async function fetchUrlWithProxy(url: string, proxy: string): Promise<string> {
+  const { tab, contextId } = await openTabWithProxy(proxy);
+  const session = await connectTab(tab.webSocketDebuggerUrl);
+  try {
+    await session.send("Page.enable");
+    await session.send("Network.enable");
+    await session.send("Page.addScriptToEvaluateOnNewDocument", { source: STEALTH_JS });
+    await navigateAndWait(session, url);
+    await sleep(rand(800, 1500));
+    await assertNoCaptcha(session);
+    await scrollPage(session);
+    await sleep(rand(400, 800));
+    return await getPageHtml(session);
+  } finally {
+    session.close();
+    await closeTab(tab.id).catch(() => {});
+    await disposeBrowserContext(contextId);
+  }
 }
 
 export async function closeSession(): Promise<void> {

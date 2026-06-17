@@ -9,44 +9,41 @@
 
 const API_URL = process.env.API_URL ?? "http://localhost:3000";
 
-// ── uule encoder ──────────────────────────────────────────────────────────────
-// Google's uule parameter encodes a location name as:
-//   "w+CAIQICI" + base64( byte(utf8_length) + utf8_bytes )
-// Raw lat,lon strings are silently ignored by Google → "location unknown".
-
-function encodeUule(locationName: string): string {
-  const buf = Buffer.from(locationName, "utf-8");
-  const withLen = Buffer.concat([Buffer.from([buf.length]), buf]);
-  return "w+CAIQICI" + withLen.toString("base64");
-}
-
 // ── URL builders ──────────────────────────────────────────────────────────────
+// uule=lat,lon works when the Chrome instance is behind a Japanese IP.
+// Without a JP proxy Google ignores the coordinates and falls back to IP geolocation.
 
-function meoUrl(query: string, location: string, hl = "ja", gl = "jp"): string {
+// MEO: sll/fll are the "Search this area" parameters Google adds when you click that button.
+// They work without matching IP — unlike raw uule=lat,lon which requires IP to match.
+// span: ~4km radius around the store; zoom 14 matches typical Maps detail level.
+function meoUrl(query: string, lat: number, lon: number, hl = "ja", gl = "jp"): string {
+  const span = "0.04,0.065";
   return (
     `http://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
     `&hl=${hl}&gl=${gl}&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1` +
-    `&uule=${encodeURIComponent(encodeUule(location))}`
+    `&fll=${lat},${lon}&fspn=${span}&fz=14` +
+    `&sll=${lat},${lon}&sspn=${span}&sz=14&stq=1&cs=0`
   );
 }
 
-function seoUrl(query: string, location: string, hl = "ja", gl = "jp"): string {
+function seoUrl(query: string, lat: number, lon: number, hl = "ja", gl = "jp"): string {
   return (
     `http://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
     `&hl=${hl}&gl=${gl}&num=100&brd_scroll=1&pws=0&ie=UTF-8&oe=UTF-8` +
-    `&uule=${encodeURIComponent(encodeUule(location))}`
+    `&sll=${lat},${lon}`
   );
 }
 
 // ── Locations ─────────────────────────────────────────────────────────────────
 
-// Location names passed directly to encodeUule — use the name Google Maps knows
-const LOCATIONS: { name: string; uule: string }[] = [
-  { name: "Tokyo",    uule: "Tokyo, Japan" },
-  { name: "Osaka",    uule: "Osaka, Japan" },
-  { name: "Kyoto",    uule: "Kyoto, Japan" },
-  { name: "Yokohama", uule: "Yokohama, Japan" },
-  { name: "Sapporo",  uule: "Sapporo, Japan" },
+// Coordinates are taken from the client's store location (same as Bright Data usage).
+// These work correctly when Chrome is behind a Japanese IP (set PROXY_SERVER env var).
+const LOCATIONS: { name: string; lat: number; lon: number }[] = [
+  { name: "Tokyo",    lat: 35.6762,  lon: 139.6503  },
+  { name: "Osaka",    lat: 34.6937,  lon: 135.5023  },
+  { name: "Kyoto",    lat: 35.0116,  lon: 135.7681  },
+  { name: "Yokohama", lat: 35.4437,  lon: 139.6380  },
+  { name: "Sapporo",  lat: 43.0621,  lon: 141.3544  },
 ];
 
 // ── Keywords ──────────────────────────────────────────────────────────────────
@@ -76,8 +73,8 @@ interface TestCase {
 const cases: TestCase[] = [];
 for (const loc of LOCATIONS) {
   for (const kw of KEYWORDS) {
-    cases.push({ type: "MEO", keyword: kw, location: loc.name, url: meoUrl(kw, loc.uule) });
-    cases.push({ type: "SEO", keyword: kw, location: loc.name, url: seoUrl(kw, loc.uule) });
+    cases.push({ type: "MEO", keyword: kw, location: loc.name, url: meoUrl(kw, loc.lat, loc.lon) });
+    cases.push({ type: "SEO", keyword: kw, location: loc.name, url: seoUrl(kw, loc.lat, loc.lon) });
   }
 }
 
