@@ -97,28 +97,54 @@ async function getSession(): Promise<CDPSession> {
 }
 
 // Fetch any URL and return raw HTML.
-// Pass proxy="http://user:pass@host:port" to route through a specific IP —
-// this creates an isolated browser context so it never touches the main session.
-// Without proxy, uses the persistent session (server's own IP).
-export async function fetchUrl(url: string, proxy?: string): Promise<string> {
+// warmUpQuery: type a keyword in the Google search box first before navigating to the
+// parameterized URL. Direct navigation to complex SERP URLs (sll=, fll=, udm=1, rflfq=1…)
+// triggers CAPTCHA immediately — a human would search first then switch to Maps view.
+export async function fetchUrl(url: string, proxy?: string, warmUpQuery?: string): Promise<string> {
   if (proxy) return fetchUrlWithProxy(url, proxy);
 
   const session = await getSession();
 
-  if (_isFirstSearch) {
-    await navigateAndWait(session, url);
+  if (warmUpQuery) {
+    await humanSearch(session, warmUpQuery);
+    await assertNoCaptcha(session);
+    _isFirstSearch = false;
+  } else if (_isFirstSearch) {
     _isFirstSearch = false;
   } else {
     await mouseClick(session, rand(200, 600), rand(200, 500));
     await sleep(rand(300, 700));
-    await navigateAndWait(session, url);
   }
 
+  await navigateAndWait(session, url);
   await sleep(rand(800, 1500));
   await assertNoCaptcha(session);
   await scrollPage(session);
   await sleep(rand(400, 800));
   return getPageHtml(session);
+}
+
+// Type a query into Google's search box and submit — mimics a real user searching.
+async function humanSearch(session: CDPSession, query: string): Promise<void> {
+  await navigateAndWait(session, "https://www.google.co.jp");
+  await sleep(rand(800, 1500));
+
+  const inputRect = await getElementRect(session, 'textarea[name="q"], input[name="q"]');
+  if (inputRect) {
+    await mouseClick(session, inputRect.cx, inputRect.cy);
+    await sleep(rand(300, 700));
+  }
+
+  for (const char of query) {
+    await session.send("Input.dispatchKeyEvent", { type: "char", text: char });
+    await sleep(rand(50, 180));
+  }
+
+  await sleep(rand(300, 600));
+  await session.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Return", code: "Enter", windowsVirtualKeyCode: 13 });
+  await session.send("Input.dispatchKeyEvent", { type: "keyUp",   key: "Return", code: "Enter", windowsVirtualKeyCode: 13 });
+  await session.waitForEvent("Page.loadEventFired", 15000).catch(() => {});
+  await sleep(rand(800, 1500));
 }
 
 async function fetchUrlWithProxy(url: string, proxy: string): Promise<string> {

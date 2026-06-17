@@ -88,7 +88,7 @@ app.post("/fetch/meo", async (c) => {
     `&sll=${lat},${lon}&sspn=${span}&sz=14&stq=1&cs=0`;
 
   try {
-    const html = await fetchUrl(url);
+    const html = await fetchUrl(url, undefined, query);
     return c.body(html, 200, { "Content-Type": "text/html; charset=utf-8" });
   } catch (err) {
     console.error("[meo]", (err as Error).message);
@@ -112,7 +112,7 @@ app.post("/fetch/seo", async (c) => {
     `&sll=${lat},${lon}`;
 
   try {
-    const html = await fetchUrl(url);
+    const html = await fetchUrl(url, undefined, query);
     return c.body(html, 200, { "Content-Type": "text/html; charset=utf-8" });
   } catch (err) {
     console.error("[seo]", (err as Error).message);
