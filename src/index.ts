@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { scrapeSerp, closeSession } from "./scraper";
+import { scrapeSerp, fetchUrl, closeSession } from "./scraper";
 import { healthCheck } from "./browser";
 
 const app = new Hono();
@@ -51,6 +51,23 @@ app.post("/search/batch", async (c) => {
     }
   }
   return c.json({ results });
+});
+
+// POST /fetch  { "url": "https://..." }
+// Navigate Chrome to any URL and return raw HTML — for custom SERP formats
+// like MEO (udm=1, rflfq=1) or SEO (num=100) with uule location encoding.
+app.post("/fetch", async (c) => {
+  const body = await c.req.json<{ url?: string }>().catch(() => null);
+  const url = body?.url?.trim();
+  if (!url) return c.json({ error: "url is required" }, 400);
+
+  try {
+    const html = await fetchUrl(url);
+    return c.body(html, 200, { "Content-Type": "text/html; charset=utf-8" });
+  } catch (err) {
+    console.error("[fetch]", (err as Error).message);
+    return c.json({ error: (err as Error).message }, 500);
+  }
 });
 
 process.on("SIGTERM", async () => {

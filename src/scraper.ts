@@ -89,6 +89,28 @@ async function getSession(): Promise<CDPSession> {
   return _session;
 }
 
+// Fetch any URL in the persistent Chrome session and return raw HTML.
+// Useful for custom SERP URLs (MEO, SEO with uule, num=100, etc.).
+export async function fetchUrl(url: string): Promise<string> {
+  const session = await getSession();
+
+  if (_isFirstSearch) {
+    await navigateAndWait(session, url);
+    _isFirstSearch = false;
+  } else {
+    // Click somewhere neutral before navigating — keeps interaction history natural
+    await mouseClick(session, rand(200, 600), rand(200, 500));
+    await sleep(rand(300, 700));
+    await navigateAndWait(session, url);
+  }
+
+  await sleep(rand(800, 1500));
+  await assertNoCaptcha(session);
+  await scrollPage(session);
+  await sleep(rand(400, 800));
+  return getPageHtml(session);
+}
+
 export async function closeSession(): Promise<void> {
   if (_session) { _session.close(); _session = null; }
   if (_tabId) { await closeTab(_tabId); _tabId = null; }
