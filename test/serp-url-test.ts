@@ -9,32 +9,44 @@
 
 const API_URL = process.env.API_URL ?? "http://localhost:3000";
 
+// ── uule encoder ──────────────────────────────────────────────────────────────
+// Google's uule parameter encodes a location name as:
+//   "w+CAIQICI" + base64( byte(utf8_length) + utf8_bytes )
+// Raw lat,lon strings are silently ignored by Google → "location unknown".
+
+function encodeUule(locationName: string): string {
+  const buf = Buffer.from(locationName, "utf-8");
+  const withLen = Buffer.concat([Buffer.from([buf.length]), buf]);
+  return "w+CAIQICI" + withLen.toString("base64");
+}
+
 // ── URL builders ──────────────────────────────────────────────────────────────
 
-function meoUrl(query: string, lat: number, lon: number, hl = "ja", gl = "jp"): string {
+function meoUrl(query: string, location: string, hl = "ja", gl = "jp"): string {
   return (
     `http://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
     `&hl=${hl}&gl=${gl}&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1` +
-    `&uule=${lat},${lon}`
+    `&uule=${encodeURIComponent(encodeUule(location))}`
   );
 }
 
-function seoUrl(query: string, lat: number, lon: number, hl = "ja", gl = "jp"): string {
+function seoUrl(query: string, location: string, hl = "ja", gl = "jp"): string {
   return (
     `http://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
     `&hl=${hl}&gl=${gl}&num=100&brd_scroll=1&pws=0&ie=UTF-8&oe=UTF-8` +
-    `&uule=${lat},${lon}`
+    `&uule=${encodeURIComponent(encodeUule(location))}`
   );
 }
 
 // ── Locations ─────────────────────────────────────────────────────────────────
 
-const LOCATIONS: { name: string; lat: number; lon: number }[] = [
-  { name: "Tokyo",    lat: 35.689487, lon: 139.691711 },
-  { name: "Osaka",    lat: 34.693738, lon: 135.502165 },
-  { name: "Kyoto",    lat: 35.011636, lon: 135.768029 },
-  { name: "Yokohama", lat: 35.443707, lon: 139.638026 },
-  { name: "Sapporo",  lat: 43.061936, lon: 141.354292 },
+// Location names passed directly to encodeUule — use the name Google Maps knows
+const LOCATIONS: { name: string; uule: string }[] = [
+  { name: "Tokyo",    uule: "Tokyo, Japan" },
+  { name: "Osaka",    uule: "Osaka, Japan" },
+  { name: "Kyoto",    uule: "Kyoto, Japan" },
+  { name: "Yokohama", uule: "Yokohama, Japan" },
+  { name: "Sapporo",  uule: "Sapporo, Japan" },
 ];
 
 // ── Keywords ──────────────────────────────────────────────────────────────────
@@ -64,8 +76,8 @@ interface TestCase {
 const cases: TestCase[] = [];
 for (const loc of LOCATIONS) {
   for (const kw of KEYWORDS) {
-    cases.push({ type: "MEO", keyword: kw, location: loc.name, url: meoUrl(kw, loc.lat, loc.lon) });
-    cases.push({ type: "SEO", keyword: kw, location: loc.name, url: seoUrl(kw, loc.lat, loc.lon) });
+    cases.push({ type: "MEO", keyword: kw, location: loc.name, url: meoUrl(kw, loc.uule) });
+    cases.push({ type: "SEO", keyword: kw, location: loc.name, url: seoUrl(kw, loc.uule) });
   }
 }
 
@@ -186,7 +198,7 @@ async function run(): Promise<void> {
   // Per-location breakdown
   console.log("\nPer-location breakdown:");
   for (const loc of LOCATIONS) {
-    const locOk = ok.filter(r => r.location === loc.name);
+    const locOk = ok.filter((r) => r.location === loc.name);
     const locMeo = locOk.filter(r => r.type === "MEO" && r.hasMeo).length;
     const locSeo = locOk.filter(r => r.type === "SEO" && r.hasSeo).length;
     console.log(`  ${loc.name.padEnd(10)} MEO hits: ${locMeo}/${KEYWORDS.length}  SEO hits: ${locSeo}/${KEYWORDS.length}`);
