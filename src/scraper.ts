@@ -66,22 +66,46 @@ interface IdleTab {
 
 let _idleTabs: IdleTab[] = [];
 
-// One persistent tab per service — opened at startup and kept alive.
+// One persistent tab per activity — opened at startup and kept alive.
 // Interaction happens within these tabs; the real-request tab is completely separate.
 const IDLE_TAB_CONFIGS = [
-  { homeUrl: "https://www.google.co.jp/maps",                                  label: "maps"      },
-  { homeUrl: "https://www.google.co.jp/search?q=東京+ランチ&tbm=isch&hl=ja",   label: "images"    },
-  { homeUrl: "https://news.google.com/home?hl=ja&gl=JP&ceid=JP:ja",            label: "news"      },
-  { homeUrl: "https://tabelog.com/tokyo/",                                      label: "tabelog"   },
-  { homeUrl: "https://www.hotpepper.jp/area/tokyo/",                            label: "hotpepper" },
+  { homeUrl: "https://www.google.co.jp/maps", label: "maps"          },
+  { homeUrl: "https://www.google.co.jp",      label: "search-food"   },
+  { homeUrl: "https://www.google.co.jp",      label: "search-beauty" },
+  { homeUrl: "https://www.google.co.jp",      label: "search-local"  },
+  { homeUrl: "https://www.google.co.jp",      label: "search-news"   },
 ];
 
-// Maps tab: search for different local queries to build Maps-specific history
+// Maps tab: rotate search queries to build Maps-specific history
 const MAPS_QUERIES = [
   "東京 ラーメン", "渋谷 カフェ", "新宿 居酒屋", "大阪 寿司",
   "京都 観光スポット", "横浜 ホテル", "銀座 レストラン", "池袋 美容院",
   "浅草 観光", "名古屋 ランチ", "福岡 ラーメン", "札幌 カニ料理",
 ];
+
+// Per-tab search query pools — each tab searches within its theme
+const IDLE_SEARCH_QUERIES: Record<string, string[]> = {
+  "search-food": [
+    "ラーメン 東京", "カフェ 渋谷", "寿司 大阪", "居酒屋 新宿",
+    "ランチ 銀座", "焼肉 池袋", "ラーメン おすすめ 東京",
+    "カフェ おしゃれ 東京", "パスタ 渋谷", "ランチ 安い 新宿",
+  ],
+  "search-beauty": [
+    "美容院 渋谷", "ネイルサロン 新宿", "エステ 銀座",
+    "ヘアサロン 東京 おすすめ", "美容室 安い 渋谷",
+    "まつげエクステ 新宿", "メンズカット 渋谷", "縮毛矯正 東京",
+  ],
+  "search-local": [
+    "ホテル 京都", "観光スポット 大阪", "温泉 箱根",
+    "旅館 京都 おすすめ", "ビジネスホテル 東京 安い",
+    "観光 東京 おすすめ", "日帰り温泉 東京 近く", "ホテル 大阪 安い",
+  ],
+  "search-news": [
+    "今日のニュース", "天気予報 東京", "スポーツニュース",
+    "経済ニュース 日本", "テクノロジー ニュース", "芸能ニュース",
+    "東京 イベント 今週", "映画 上映中 東京",
+  ],
+};
 
 async function getSession(): Promise<CDPSession> {
   if (_session?.isConnected()) return _session;
@@ -299,70 +323,106 @@ export async function idleBrowse(): Promise<void> {
 async function interactWithIdleTab(tab: IdleTab): Promise<void> {
   const s = tab.session;
 
-  // Maps tab: navigate to a new search query each time for richer Maps history
   if (tab.label === "maps") {
-    const q = MAPS_QUERIES[Math.floor(Math.random() * MAPS_QUERIES.length)];
-    const load = s.waitForEvent("Page.loadEventFired", 12000);
-    await s.send("Page.navigate", {
-      url: `https://www.google.co.jp/maps/search/${encodeURIComponent(q)}`,
+    await interactMapsTab(s);
+  } else {
+    await interactSearchTab(s, tab.label);
+  }
+}
+
+// Google Maps tab — search for a local query, scroll, optionally click a place listing
+async function interactMapsTab(s: CDPSession): Promise<void> {
+  const q = MAPS_QUERIES[Math.floor(Math.random() * MAPS_QUERIES.length)];
+  const load = s.waitForEvent("Page.loadEventFired", 12000);
+  await s.send("Page.navigate", {
+    url: `https://www.google.co.jp/maps/search/${encodeURIComponent(q)}`,
+  });
+  await load.catch(() => {});
+  await sleep(rand(2000, 4000));
+  await cdpScroll(s);
+  await sleep(rand(1500, 3000));
+  // Click a place listing ~50% — opens the place detail panel
+  if (Math.random() < 0.5) {
+    await s.send("Runtime.evaluate", {
+      expression: `(function() {
+        const place = document.querySelector('a[href*="/maps/place/"]');
+        if (place) place.click();
+      })()`,
+      awaitPromise: false,
     });
-    await load.catch(() => {});
+    await sleep(rand(4000, 8000));
+    await cdpScroll(s);
     await sleep(rand(2000, 4000));
   }
+}
 
-  // Images tab: rotate through different image searches
-  if (tab.label === "images" && Math.random() < 0.5) {
-    const queries = ["東京 桜", "富士山", "日本料理", "渋谷 夜景", "京都 紅葉", "寿司", "温泉 旅館"];
-    const q = queries[Math.floor(Math.random() * queries.length)];
-    const load = s.waitForEvent("Page.loadEventFired", 12000);
-    await s.send("Page.navigate", {
-      url: `https://www.google.co.jp/search?q=${encodeURIComponent(q)}&tbm=isch&hl=ja&gl=jp`,
-    });
-    await load.catch(() => {});
-    await sleep(rand(2000, 3500));
+// Search tabs — do an organic Google search, scroll results, click an organic result,
+// then browse the result page. Full chain: google.co.jp → result click → external site.
+async function interactSearchTab(s: CDPSession, label: string): Promise<void> {
+  const pool = IDLE_SEARCH_QUERIES[label] ?? IDLE_SEARCH_QUERIES["search-food"];
+  const q    = pool[Math.floor(Math.random() * pool.length)];
+
+  // Navigate to Google SERP for this query — referrer will be google.co.jp
+  const load1 = s.waitForEvent("Page.loadEventFired", 15000);
+  await s.send("Page.navigate", {
+    url: `https://www.google.co.jp/search?q=${encodeURIComponent(q)}&hl=ja&gl=jp`,
+  });
+  await load1.catch(() => {});
+  await sleep(rand(1500, 3000));
+  await cdpScroll(s);
+  await sleep(rand(1000, 2500));
+
+  // Click the first organic result heading — this is the click-through signal Google tracks
+  const clicked = await s.send("Runtime.evaluate", {
+    expression: `(function() {
+      // h3 inside an anchor = organic result title
+      const heading = Array.from(document.querySelectorAll('h3'))
+        .find(h => h.closest('a[href]'));
+      if (heading) { heading.closest('a[href]').click(); return true; }
+      return false;
+    })()`,
+    returnByValue: true,
+  }) as { result?: { value?: boolean } };
+
+  if (clicked?.result?.value) {
+    // Wait for result page to load, then browse it
+    const load2 = s.waitForEvent("Page.loadEventFired", 15000);
+    await load2.catch(() => {});
+    await sleep(rand(4000, 9000));
+    await cdpScroll(s);
+    await sleep(rand(2000, 5000));
+    // Sometimes click one more link within the result site
+    if (Math.random() < 0.4) {
+      await s.send("Runtime.evaluate", {
+        expression: `(function() {
+          const links = Array.from(document.querySelectorAll('a[href]'))
+            .filter(a => {
+              const r = a.getBoundingClientRect();
+              return r.width > 0 && r.height > 0 && r.top > 50 && r.top < window.innerHeight - 50;
+            });
+          if (links.length > 0)
+            links[Math.floor(Math.random() * Math.min(links.length, 6))].click();
+        })()`,
+        awaitPromise: false,
+      });
+      await sleep(rand(4000, 8000));
+      await cdpScroll(s);
+      await sleep(rand(2000, 4000));
+    }
   }
+}
 
-  // Scroll down naturally — simulate reading
+// CDP-based smooth scroll — no xdotool needed, works on background tabs
+async function cdpScroll(s: CDPSession): Promise<void> {
   await s.send("Runtime.evaluate", {
-    expression: `window.scrollBy({ top: ${rand(200, 500)}, behavior: 'smooth' })`,
+    expression: `window.scrollBy({ top: ${rand(250, 550)}, behavior: 'smooth' })`,
     awaitPromise: false,
   });
-  await sleep(rand(1500, 3500));
+  await sleep(rand(800, 1500));
   await s.send("Runtime.evaluate", {
     expression: `window.scrollBy({ top: ${rand(100, 300)}, behavior: 'smooth' })`,
     awaitPromise: false,
   });
-  await sleep(rand(1000, 2500));
-
-  // ~50%: click a visible link on the page (generates real HTTP requests to sub-pages)
-  if (Math.random() < 0.5) {
-    await s.send("Runtime.evaluate", {
-      expression: `(function() {
-        const links = Array.from(document.querySelectorAll('a[href]'))
-          .filter(a => {
-            const r = a.getBoundingClientRect();
-            return r.width > 0 && r.height > 0 && r.top > 50 && r.top < window.innerHeight - 50;
-          });
-        if (links.length > 0)
-          links[Math.floor(Math.random() * Math.min(links.length, 8))].click();
-      })()`,
-      awaitPromise: false,
-    });
-    await sleep(rand(4000, 9000));
-    await s.send("Runtime.evaluate", {
-      expression: `window.scrollBy({ top: ${rand(200, 600)}, behavior: 'smooth' })`,
-      awaitPromise: false,
-    });
-    await sleep(rand(2000, 4000));
-  }
-
-  // ~20%: navigate back to home — starts a fresh browsing session on that domain
-  if (Math.random() < 0.2) {
-    const load = s.waitForEvent("Page.loadEventFired", 10000);
-    await s.send("Page.navigate", { url: tab.homeUrl });
-    await load.catch(() => {});
-    await sleep(rand(2000, 4000));
-  }
 }
 
 export async function closeSession(): Promise<void> {
