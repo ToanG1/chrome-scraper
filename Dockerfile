@@ -31,6 +31,9 @@ COPY test/ ./test/
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh && chown -R node:node /app
 
+# Pre-create profile dir as node-owned so the named volume inherits correct permissions
+RUN mkdir -p /tmp/chrome-profile && chown node:node /tmp/chrome-profile
+
 ENV PORT=3000
 EXPOSE 3000 6080
 

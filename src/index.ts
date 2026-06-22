@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { scrapeSerp, fetchUrl, fetchMeoOrganic, searchInBox, closeSession } from "./scraper";
 import { healthCheck } from "./browser";
+import { startIdleBrowsing, stopIdleBrowsing } from "./idle";
 
 const app = new Hono();
 const PORT = Number(process.env.PORT) || 3000;
@@ -155,10 +156,12 @@ app.post("/fetch/search-in-box", async (c) => {
 });
 
 process.on("SIGTERM", async () => {
+  stopIdleBrowsing();
   await closeSession();
   process.exit(0);
 });
 
-serve({ fetch: app.fetch, port: PORT }, () =>
-  console.log(`chrome-scraper on :${PORT}`),
-);
+serve({ fetch: app.fetch, port: PORT }, () => {
+  console.log(`chrome-scraper on :${PORT}`);
+  startIdleBrowsing();
+});

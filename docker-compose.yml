@@ -12,4 +12,9 @@ services:
       # when the request IP geolocation matches Japan.
       # Example: PROXY_SERVER=jp-proxy.example.com:8080
       - PROXY_SERVER=${PROXY_SERVER:-}
+    volumes:
+      - chrome-profile:/tmp/chrome-profile  # persists Google session across restarts
     restart: unless-stopped
+
+volumes:
+  chrome-profile:

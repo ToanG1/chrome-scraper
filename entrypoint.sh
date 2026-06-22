@@ -34,6 +34,9 @@ google-chrome-stable \
   --disable-infobars \
   --window-size=1366,768 \
   --disable-dev-shm-usage \
+  --ignore-gpu-blocklist \
+  --use-angle=swiftshader \
+  --lang=ja \
   --user-data-dir=/tmp/chrome-profile &
 
 # 5. Wait until Chrome debug API is ready

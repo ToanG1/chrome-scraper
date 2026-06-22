@@ -50,6 +50,50 @@ let _session: CDPSession | null = null;
 let _tabId: string | null = null;
 let _isFirstSearch = true;
 let _captchaHit = false;
+let _lastRealRequest = 0;
+
+// Minimum quiet time before idle browsing is allowed to run (ms)
+const IDLE_COOLDOWN = 120_000;
+
+// Random Japanese keywords a real user would search
+const IDLE_KEYWORDS = [
+  "天気 東京", "ラーメン おすすめ", "ランチ 新宿", "カフェ 渋谷",
+  "コンビニ 近く", "ニュース 今日", "美容院 予約", "歯医者 口コミ",
+  "居酒屋 大阪", "ホテル 京都", "映画 上映中", "スーパー セール",
+  "Amazonプライム", "ユニクロ セール", "電車 時刻表", "Yahoo メール",
+  "エクセル 使い方", "東京 観光", "パスタ レシピ", "温泉 関東",
+];
+
+// Sites that commonly appear in local Japanese SERPs — the kind of pages
+// a real user browses after finding results on Google Maps / local search.
+// Visiting these builds organic referral history in the Chrome profile.
+const IDLE_SITES = [
+  // Food & restaurants (tabelog, gurunavi, hotpepper — top MEO result domains)
+  "https://tabelog.com/tokyo/",
+  "https://tabelog.com/osaka/",
+  "https://www.hotpepper.jp/area/tokyo/",
+  "https://www.hotpepper.jp/area/osaka/",
+  "https://gurunavi.com/ja/tokyo/",
+  "https://r.gnavi.co.jp/area/areamenu/",
+  // Beauty / hair salons
+  "https://beauty.hotpepper.jp/catalog/ladys/hair/",
+  "https://www.minpaku.jp",
+  // Hotels / travel
+  "https://www.jalan.net/",
+  "https://hotel.jalan.net/",
+  "https://www.booking.com/region/jp/tokyo.ja.html",
+  "https://www.tripadvisor.jp/Tourism-g298184-Tokyo_Tokyo_Prefecture_Kanto-Vacations.html",
+  // Shopping / retail
+  "https://www.amazon.co.jp",
+  "https://www.kakaku.com/",
+  // Real estate
+  "https://suumo.jp/chintai/tokyo/",
+  "https://www.homes.co.jp/chintai/tokyo/",
+  // Local news / general
+  "https://www.yahoo.co.jp",
+  "https://www3.nhk.or.jp/news/",
+  "https://weathernews.jp",
+];
 
 async function getSession(): Promise<CDPSession> {
   if (_session?.isConnected()) return _session;
@@ -102,7 +146,7 @@ async function getSession(): Promise<CDPSession> {
 // triggers CAPTCHA immediately — a human would search first then switch to Maps view.
 export async function fetchUrl(url: string, proxy?: string, warmUpQuery?: string): Promise<string> {
   if (proxy) return fetchUrlWithProxy(url, proxy);
-
+  _lastRealRequest = Date.now();
   const session = await getSession();
 
   if (warmUpQuery && _isFirstSearch) {
@@ -167,6 +211,7 @@ async function fetchUrlWithProxy(url: string, proxy: string): Promise<string> {
 //   3. xdotool click the Maps/Local tab → MEO results
 // Subsequent keywords for the same location use searchInBox() instead.
 export async function fetchMeoOrganic(query: string): Promise<string> {
+  _lastRealRequest = Date.now();
   const session = await getSession();
 
   // Land on google.co.jp so the omnibox search defaults to the right domain
@@ -200,6 +245,7 @@ export async function fetchMeoOrganic(query: string): Promise<string> {
 // Google keeps the location context (uule/sll) in the session after the first
 // MEO URL loads, so subsequent keywords stay pinned to the same area.
 export async function searchInBox(query: string): Promise<string> {
+  _lastRealRequest = Date.now();
   const session = await getSession();
   const inputRect = await getElementRect(session, 'textarea[name="q"], input[name="q"]');
   if (!inputRect) throw new Error("Search input not found — navigate to a SERP first");
@@ -216,6 +262,145 @@ export async function searchInBox(query: string): Promise<string> {
   await scrollPage();
   await sleep(rand(400, 800));
   return getPageHtml(session);
+}
+
+// Called by the idle loop. Skips silently if a real request ran recently.
+export async function idleBrowse(): Promise<void> {
+  if (Date.now() - _lastRealRequest < IDLE_COOLDOWN) return;
+
+  const session = await getSession();
+  const r = Math.random();
+
+  if (r < 0.25) {
+    await idleGoogleMaps(session);
+  } else if (r < 0.45) {
+    await idleGoogleImages(session);
+  } else if (r < 0.60) {
+    await idleGoogleNews(session);
+  } else if (r < 0.75) {
+    await idleGoogleSearch(session);
+  } else {
+    await idleResultSite(session);
+  }
+}
+
+// Google Maps — most relevant for MEO: signals this profile uses Maps actively
+async function idleGoogleMaps(session: CDPSession): Promise<void> {
+  const queries = [
+    "東京 ラーメン", "渋谷 カフェ", "新宿 居酒屋", "大阪 寿司",
+    "京都 観光スポット", "横浜 ホテル", "銀座 レストラン", "池袋 美容院",
+    "浅草 観光", "名古屋 ランチ",
+  ];
+  const q = queries[Math.floor(Math.random() * queries.length)];
+  console.log(`[idle] maps: "${q}"`);
+  await navigateAndWait(session, `https://www.google.co.jp/maps/search/${encodeURIComponent(q)}`);
+  await sleep(rand(3000, 6000));
+  await scrollPage();
+  await sleep(rand(2000, 4000));
+  // Click a place listing ~50% of the time
+  if (Math.random() < 0.5) {
+    const place = await getElementRect(session, 'a[href*="/maps/place/"]');
+    if (place) {
+      const load = session.waitForEvent("Page.loadEventFired", 12000);
+      await xdoClick(place.cx, place.cy);
+      await load.catch(() => {});
+      await sleep(rand(4000, 8000));
+      await scrollPage();
+      await sleep(rand(2000, 4000));
+    }
+  }
+}
+
+// Google Images — natural image search, heavy NID signal
+async function idleGoogleImages(session: CDPSession): Promise<void> {
+  const queries = [
+    "東京 桜", "富士山", "日本料理", "渋谷 夜景", "京都 紅葉",
+    "ラーメン", "寿司", "温泉 旅館", "東京タワー", "新幹線",
+  ];
+  const q = queries[Math.floor(Math.random() * queries.length)];
+  console.log(`[idle] images: "${q}"`);
+  await navigateAndWait(session, `https://www.google.co.jp/search?q=${encodeURIComponent(q)}&tbm=isch&hl=ja&gl=jp`);
+  await sleep(rand(2500, 5000));
+  await scrollPage();
+  await sleep(rand(2000, 4000));
+}
+
+// Google News — Japanese top stories
+async function idleGoogleNews(session: CDPSession): Promise<void> {
+  console.log("[idle] google news");
+  await navigateAndWait(session, "https://news.google.com/home?hl=ja&gl=JP&ceid=JP:ja");
+  await sleep(rand(3000, 6000));
+  await scrollPage();
+  await sleep(rand(2000, 4000));
+  // Read an article ~40% of the time
+  if (Math.random() < 0.4) {
+    const article = await getElementRect(session, 'article a[href]');
+    if (article) {
+      const load = session.waitForEvent("Page.loadEventFired", 12000);
+      await xdoClick(article.cx, article.cy);
+      await load.catch(() => {});
+      await sleep(rand(5000, 10000));
+      await scrollPage();
+      await sleep(rand(2000, 4000));
+    }
+  }
+}
+
+// Google Search — plain keyword, minimal frequency to avoid rate limits
+async function idleGoogleSearch(session: CDPSession): Promise<void> {
+  const q = IDLE_KEYWORDS[Math.floor(Math.random() * IDLE_KEYWORDS.length)];
+  console.log(`[idle] search: "${q}"`);
+  await navigateAndWait(session, "https://www.google.co.jp");
+  await sleep(rand(800, 1500));
+  const load = session.waitForEvent("Page.loadEventFired", 15000);
+  await xdoOmniboxSearch(q);
+  await load.catch(() => {});
+  await sleep(rand(1500, 3000));
+
+  const url = await getCurrentUrl(session);
+  if (url.includes("/sorry/")) {
+    _captchaHit = true;
+    await closeSession();
+    console.warn("[idle] CAPTCHA on search — backing off");
+    return;
+  }
+
+  await scrollPage();
+  await sleep(rand(1000, 2500));
+  // Click a result ~35% of the time
+  if (Math.random() < 0.35) {
+    const link = await getElementRect(session, "h3");
+    if (link) {
+      const resultLoad = session.waitForEvent("Page.loadEventFired", 15000);
+      await xdoClick(link.cx, link.cy);
+      await resultLoad.catch(() => {});
+      await sleep(rand(5000, 12000));
+      await scrollPage();
+      await sleep(rand(2000, 5000));
+    }
+  }
+}
+
+// Direct result site visit — tabelog, hotpepper, etc.
+async function idleResultSite(session: CDPSession): Promise<void> {
+  const site = IDLE_SITES[Math.floor(Math.random() * IDLE_SITES.length)];
+  console.log(`[idle] site: ${site}`);
+  await navigateAndWait(session, site);
+  await sleep(rand(4000, 9000));
+  await scrollPage();
+  await sleep(rand(3000, 6000));
+  // Drill one level deeper ~40% of the time
+  if (Math.random() < 0.4) {
+    const link = await getElementRect(session, "a[href]");
+    if (link) {
+      const deepLoad = session.waitForEvent("Page.loadEventFired", 12000);
+      await xdoClick(link.cx, link.cy);
+      await deepLoad.catch(() => {});
+      await sleep(rand(4000, 8000));
+      await scrollPage();
+      await sleep(rand(2000, 4000));
+    }
+  }
 }
 
 export async function closeSession(): Promise<void> {
