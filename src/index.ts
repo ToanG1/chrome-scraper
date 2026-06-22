@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { scrapeSerp, fetchUrl, fetchMeoOrganic, searchInBox, closeSession } from "./scraper";
+import { scrapeSerp, fetchUrl, fetchMeoOrganic, searchInBox, closeSession, initIdleTabs } from "./scraper";
 import { healthCheck } from "./browser";
 import { startIdleBrowsing, stopIdleBrowsing } from "./idle";
 
@@ -163,5 +163,7 @@ process.on("SIGTERM", async () => {
 
 serve({ fetch: app.fetch, port: PORT }, () => {
   console.log(`chrome-scraper on :${PORT}`);
-  startIdleBrowsing();
+  initIdleTabs()
+    .then(() => startIdleBrowsing())
+    .catch((e) => console.error("[idle-tabs]", (e as Error).message));
 });
