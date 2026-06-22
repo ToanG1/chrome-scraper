@@ -9,7 +9,7 @@ import {
 } from "./browser";
 import { STEALTH_JS } from "./stealth";
 import { parseSerp, OrganicResult } from "./parser";
-import { xdoNavigate, xdoScroll, xdoClick } from "./xdotool";
+import { xdoNavigate, xdoOmniboxSearch, xdoScroll, xdoClick, xdoReplaceText, xdoKey } from "./xdotool";
 
 const GOOGLE_URL = (q: string, start = 0): string =>
   `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&gl=us${start ? `&start=${start}` : ""}`;
@@ -159,6 +159,63 @@ async function fetchUrlWithProxy(url: string, proxy: string): Promise<string> {
     await closeTab(tab.id).catch(() => {});
     await disposeBrowserContext(contextId);
   }
+}
+
+// Full organic MEO flow — no parameterized URLs, 100% human-like actions:
+//   1. CDP navigate to google.co.jp homepage (no params, safe)
+//   2. xdotool type keyword in omnibox → plain SERP (isTrusted=true, normal autocomplete)
+//   3. xdotool click the Maps/Local tab → MEO results
+// Subsequent keywords for the same location use searchInBox() instead.
+export async function fetchMeoOrganic(query: string): Promise<string> {
+  const session = await getSession();
+
+  // Land on google.co.jp so the omnibox search defaults to the right domain
+  await navigateAndWait(session, "https://www.google.co.jp");
+  await sleep(rand(600, 1200));
+
+  // Organic omnibox search — plain keyword, completely normal autocomplete telemetry
+  const load1 = session.waitForEvent("Page.loadEventFired", 15000);
+  await xdoOmniboxSearch(query);
+  await load1.catch(() => {});
+  await sleep(rand(1000, 1800));
+  await assertNoCaptcha(session);
+
+  // Click the Maps / Local results tab (udm=1 link in the tab bar)
+  const mapsTab = await getElementRect(session, 'a[href*="udm=1"]');
+  if (mapsTab) {
+    const load2 = session.waitForEvent("Page.loadEventFired", 15000);
+    await xdoClick(mapsTab.cx, mapsTab.cy);
+    await load2.catch(() => {});
+    await sleep(rand(800, 1500));
+    await assertNoCaptcha(session);
+  }
+
+  await scrollPage();
+  await sleep(rand(400, 800));
+  _isFirstSearch = false;
+  return getPageHtml(session);
+}
+
+// Search for a new keyword from the current SERP page's search box.
+// Google keeps the location context (uule/sll) in the session after the first
+// MEO URL loads, so subsequent keywords stay pinned to the same area.
+export async function searchInBox(query: string): Promise<string> {
+  const session = await getSession();
+  const inputRect = await getElementRect(session, 'textarea[name="q"], input[name="q"]');
+  if (!inputRect) throw new Error("Search input not found — navigate to a SERP first");
+
+  const load = session.waitForEvent("Page.loadEventFired", 15000);
+  await xdoClick(inputRect.cx, inputRect.cy);
+  await sleep(rand(300, 600));
+  await xdoReplaceText(query);
+  await sleep(rand(300, 500));
+  await xdoKey("Return");
+  await load.catch(() => {});
+  await sleep(rand(800, 1500));
+  await assertNoCaptcha(session);
+  await scrollPage();
+  await sleep(rand(400, 800));
+  return getPageHtml(session);
 }
 
 export async function closeSession(): Promise<void> {

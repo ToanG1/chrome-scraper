@@ -30,6 +30,19 @@ export async function xdoNavigate(url: string): Promise<void> {
   await xdo(["key", "Return"]);
 }
 
+// Type a plain search keyword in the omnibox (not a URL).
+// Normal autocomplete for "sushi" looks nothing like autocomplete for
+// "npsic=0&rflfq=1&uule=35.689..." — no suspicious telemetry.
+export async function xdoOmniboxSearch(query: string): Promise<void> {
+  await xdo(["key", "--clearmodifiers", "ctrl+l"]);
+  await sleep(200);
+  await xdo(["key", "--clearmodifiers", "ctrl+a"]);
+  await sleep(50);
+  await xdo(["type", "--clearmodifiers", "--delay", "40", query]);
+  await sleep(rand(200, 400));
+  await xdo(["key", "Return"]);
+}
+
 export async function xdoScroll(): Promise<void> {
   const steps = rand(3, 6);
   for (let i = 0; i < steps; i++) {
@@ -47,4 +60,15 @@ export async function xdoClick(x: number, y: number): Promise<void> {
   await xdo(["mousemove", "--sync", String(x), String(y)]);
   await sleep(rand(50, 120));
   await xdo(["click", "1"]);
+}
+
+// Select all existing text and replace with new text — for reusing the search box.
+export async function xdoReplaceText(text: string): Promise<void> {
+  await xdo(["key", "--clearmodifiers", "ctrl+a"]);
+  await sleep(50);
+  await xdo(["type", "--clearmodifiers", "--delay", "40", text]);
+}
+
+export async function xdoKey(key: string): Promise<void> {
+  await xdo(["key", "--clearmodifiers", key]);
 }

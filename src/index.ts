@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { scrapeSerp, fetchUrl, closeSession } from "./scraper";
+import { scrapeSerp, fetchUrl, fetchMeoOrganic, searchInBox, closeSession } from "./scraper";
 import { healthCheck } from "./browser";
 
 const app = new Hono();
@@ -118,6 +118,38 @@ app.post("/fetch/seo", async (c) => {
     return c.body(html, 200, { "Content-Type": "text/html; charset=utf-8" });
   } catch (err) {
     console.error("[seo]", (err as Error).message);
+    return c.json({ error: (err as Error).message }, 500);
+  }
+});
+
+// POST /fetch/meo-organic  { "query": "sushi" }
+// Fully organic flow: google.co.jp homepage → omnibox keyword → Maps tab click.
+// No complex URL parameters — all actions produce isTrusted=true events.
+app.post("/fetch/meo-organic", async (c) => {
+  const body = await c.req.json<{ query?: string }>().catch(() => null);
+  const query = body?.query?.trim();
+  if (!query) return c.json({ error: "query is required" }, 400);
+  try {
+    const html = await fetchMeoOrganic(query);
+    return c.body(html, 200, { "Content-Type": "text/html; charset=utf-8" });
+  } catch (err) {
+    console.error("[meo-organic]", (err as Error).message);
+    return c.json({ error: (err as Error).message }, 500);
+  }
+});
+
+// POST /fetch/search-in-box  { "query": "ramen" }
+// Types the query into the search box of the current tab and waits for results.
+// Reuses the location context from the previous /fetch MEO URL — no complex params needed.
+app.post("/fetch/search-in-box", async (c) => {
+  const body = await c.req.json<{ query?: string }>().catch(() => null);
+  const query = body?.query?.trim();
+  if (!query) return c.json({ error: "query is required" }, 400);
+  try {
+    const html = await searchInBox(query);
+    return c.body(html, 200, { "Content-Type": "text/html; charset=utf-8" });
+  } catch (err) {
+    console.error("[search-in-box]", (err as Error).message);
     return c.json({ error: (err as Error).message }, 500);
   }
 });

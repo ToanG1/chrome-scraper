@@ -83,11 +83,26 @@ function htmlStats(html: string): { bytes: number; hasMeo: boolean } {
   };
 }
 
-async function fetchHtml(url: string, warmUpQuery: string): Promise<string> {
-  const res = await fetch(`${API_URL}/fetch`, {
+// First keyword per location: organic omnibox search → Maps tab click (no URL params).
+async function fetchMeoOrganic(query: string): Promise<string> {
+  const res = await fetch(`${API_URL}/fetch/meo-organic`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url, warmUpQuery }),
+    body: JSON.stringify({ query }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}) as { error?: string });
+    throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
+  }
+  return res.text();
+}
+
+// Subsequent keywords at same location: type in search box — Google keeps location context.
+async function fetchSearchInBox(query: string): Promise<string> {
+  const res = await fetch(`${API_URL}/fetch/search-in-box`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}) as { error?: string });
@@ -103,37 +118,48 @@ async function run(): Promise<void> {
   log(`API: ${API_URL}`);
 
   const results: {
-    keyword: string; location: string;
+    keyword: string; location: string; method: string;
     ok: boolean; captcha: boolean; bytes: number;
     hasMeo: boolean; elapsed: number; error?: string;
   }[] = [];
+
+  let lastLocation = "";
 
   for (let i = 0; i < cases.length; i++) {
     const { keyword, location, url } = cases[i];
     const t0 = Date.now();
 
-    log(`[${i + 1}/${cases.length}] "${keyword}" @ ${location}`);
+    // First keyword per location (or after CAPTCHA reset): full MEO URL.
+    // All others: type in the search box — Google keeps location context in session.
+    const isFirstInLocation = location !== lastLocation;
+    const method = isFirstInLocation ? "nav" : "box";
+    if (isFirstInLocation) lastLocation = location;
+
+    log(`[${i + 1}/${cases.length}] [${method}] "${keyword}" @ ${location}`);
 
     try {
-      const html = await fetchHtml(url, keyword);
+      const html = isFirstInLocation
+        ? await fetchMeoOrganic(keyword)
+        : await fetchSearchInBox(keyword);
       const elapsed = Date.now() - t0;
       const stats = htmlStats(html);
-      results.push({ keyword, location, ok: true, captcha: false, elapsed, bytes: stats.bytes, hasMeo: stats.hasMeo });
+      results.push({ keyword, location, method, ok: true, captcha: false, elapsed, bytes: stats.bytes, hasMeo: stats.hasMeo });
       log(`  OK  ${(stats.bytes / 1024).toFixed(0)}KB  meo=${stats.hasMeo}  ${fmt(elapsed)}`);
     } catch (err) {
       const elapsed = Date.now() - t0;
       const msg = (err as Error).message;
       const isCaptcha = msg.toLowerCase().includes("captcha");
-      results.push({ keyword, location, ok: false, captcha: isCaptcha, bytes: 0, hasMeo: false, elapsed, error: msg });
+      results.push({ keyword, location, method, ok: false, captcha: isCaptcha, bytes: 0, hasMeo: false, elapsed, error: msg });
       if (isCaptcha) {
         log(`  CAPTCHA — pausing 5 minutes...`);
+        lastLocation = ""; // force full MEO URL navigation after recovery
         await sleep(300000);
       } else {
         log(`  FAIL  ${msg}`);
       }
     }
 
-    // Slow pace: 15–25s between requests, 50–80s break every 10 requests
+    // Slower between box searches, longer break every 10
     if (i < cases.length - 1) {
       const pause = (i + 1) % 10 === 0 ? rand(50000, 80000) : rand(15000, 25000);
       log(`  -> pause ${fmt(pause)}`);
