@@ -38,6 +38,7 @@ google-chrome-stable \
   --disable-dev-shm-usage \
   --ignore-gpu-blocklist \
   --use-angle=swiftshader \
+  --enable-unsafe-swiftshader \
   --lang=ja \
   --user-data-dir=/tmp/chrome-profile &
 
