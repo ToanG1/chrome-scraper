@@ -105,7 +105,8 @@ export async function fetchUrl(url: string, proxy?: string, warmUpQuery?: string
 
   const session = await getSession();
 
-  if (warmUpQuery) {
+  if (warmUpQuery && _isFirstSearch) {
+    // Only warm up once per session — do a plain search before the first complex URL.
     await humanSearch(session, warmUpQuery);
     await assertNoCaptcha(session);
     _isFirstSearch = false;
@@ -190,7 +191,7 @@ async function assertNoCaptcha(session: CDPSession): Promise<void> {
 
 async function navigateAndWait(session: CDPSession, url: string): Promise<void> {
   const load = session.waitForEvent("Page.loadEventFired", 15000);
-  await xdoNavigate(url);
+  await session.send("Page.navigate", { url });
   await load.catch(() => {});
 }
 

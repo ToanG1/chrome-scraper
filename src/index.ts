@@ -53,16 +53,18 @@ app.post("/search/batch", async (c) => {
   return c.json({ results });
 });
 
-// POST /fetch  { "url": "...", "proxy": "http://user:pass@host:port" }
-// proxy is optional — isolated browser context per request, no Chrome restart needed.
+// POST /fetch  { "url": "...", "proxy": "...", "warmUpQuery": "sushi" }
+// warmUpQuery: do a plain Google search first before navigating to url,
+// mimicking a human who searches then opens the parameterized SERP URL.
 app.post("/fetch", async (c) => {
-  const body = await c.req.json<{ url?: string; proxy?: string }>().catch(() => null);
+  const body = await c.req.json<{ url?: string; proxy?: string; warmUpQuery?: string }>().catch(() => null);
   const url = body?.url?.trim();
   const proxy = body?.proxy?.trim() || undefined;
+  const warmUpQuery = body?.warmUpQuery?.trim() || undefined;
   if (!url) return c.json({ error: "url is required" }, 400);
 
   try {
-    const html = await fetchUrl(url, proxy);
+    const html = await fetchUrl(url, proxy, warmUpQuery);
     return c.body(html, 200, { "Content-Type": "text/html; charset=utf-8" });
   } catch (err) {
     console.error("[fetch]", (err as Error).message);
