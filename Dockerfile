@@ -18,6 +18,9 @@ RUN apt-get update && apt-get install -y \
   && apt-get update && apt-get install -y google-chrome-stable --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y xdotool xclip --no-install-recommends \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY package.json .

@@ -5,11 +5,11 @@ import {
   openTabWithProxy,
   disposeBrowserContext,
   CDPSession,
-  mouseClick,
   getElementRect,
 } from "./browser";
 import { STEALTH_JS } from "./stealth";
 import { parseSerp, OrganicResult } from "./parser";
+import { xdoNavigate, xdoScroll, xdoClick } from "./xdotool";
 
 const GOOGLE_URL = (q: string, start = 0): string =>
   `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&gl=us${start ? `&start=${start}` : ""}`;
@@ -112,14 +112,14 @@ export async function fetchUrl(url: string, proxy?: string, warmUpQuery?: string
   } else if (_isFirstSearch) {
     _isFirstSearch = false;
   } else {
-    await mouseClick(session, rand(200, 600), rand(200, 500));
+    await xdoClick(rand(200, 600), rand(200, 500));
     await sleep(rand(300, 700));
   }
 
   await navigateAndWait(session, url);
   await sleep(rand(800, 1500));
   await assertNoCaptcha(session);
-  await scrollPage(session);
+  await scrollPage();
   await sleep(rand(400, 800));
   return getPageHtml(session);
 }
@@ -132,7 +132,7 @@ async function humanSearch(session: CDPSession, query: string): Promise<void> {
   await sleep(rand(800, 1500));
   await navigateAndWait(session, `https://www.google.com/search?q=${encodeURIComponent(query)}&sourceid=chrome&ie=UTF-8`);
   await sleep(rand(800, 1500));
-  await scrollPage(session);
+  await scrollPage();
   await sleep(rand(500, 1000));
 }
 
@@ -143,10 +143,14 @@ async function fetchUrlWithProxy(url: string, proxy: string): Promise<string> {
     await session.send("Page.enable");
     await session.send("Network.enable");
     await session.send("Page.addScriptToEvaluateOnNewDocument", { source: STEALTH_JS });
-    await navigateAndWait(session, url);
+    // Use CDP navigation for proxy tab — xdotool targets the focused window and
+    // cannot address a background browser context.
+    const load = session.waitForEvent("Page.loadEventFired", 15000);
+    await session.send("Page.navigate", { url });
+    await load.catch(() => {});
     await sleep(rand(800, 1500));
     await assertNoCaptcha(session);
-    await scrollPage(session);
+    await scrollPage();
     await sleep(rand(400, 800));
     return await getPageHtml(session);
   } finally {
@@ -186,7 +190,7 @@ async function assertNoCaptcha(session: CDPSession): Promise<void> {
 
 async function navigateAndWait(session: CDPSession, url: string): Promise<void> {
   const load = session.waitForEvent("Page.loadEventFired", 15000);
-  await session.send("Page.navigate", { url });
+  await xdoNavigate(url);
   await load.catch(() => {});
 }
 
@@ -200,19 +204,8 @@ async function getPageHtml(session: CDPSession): Promise<string> {
 
 // ── Human-like behaviors ──────────────────────────────────────────────────────
 
-// Scroll down the page in a few natural steps
-async function scrollPage(session: CDPSession): Promise<void> {
-  const steps = rand(3, 6);
-  for (let i = 0; i < steps; i++) {
-    await session.send("Input.dispatchMouseEvent", {
-      type: "mouseWheel",
-      x: rand(300, 800),
-      y: rand(200, 500),
-      deltaX: 0,
-      deltaY: rand(200, 450),
-    });
-    await sleep(rand(300, 700));
-  }
+async function scrollPage(): Promise<void> {
+  await xdoScroll();
 }
 
 // Visit a random non-Google site to break up the SERP-only pattern
@@ -221,7 +214,7 @@ async function humanBrowse(session: CDPSession): Promise<void> {
   console.log(`[browse] visiting ${site}`);
   await navigateAndWait(session, site);
   await sleep(rand(3000, 7000));
-  await scrollPage(session);
+  await scrollPage();
   await sleep(rand(1000, 3000));
 }
 
@@ -230,7 +223,7 @@ async function clickResult(session: CDPSession, resultUrl: string, returnUrl: st
   console.log(`[click] visiting result: ${resultUrl.slice(0, 60)}...`);
   await navigateAndWait(session, resultUrl);
   await sleep(rand(4000, 9000));
-  await scrollPage(session);
+  await scrollPage();
   await sleep(rand(1000, 3000));
   // navigate back to SERP so the tab history looks natural
   await navigateAndWait(session, returnUrl);
@@ -245,7 +238,7 @@ async function searchNext(session: CDPSession, query: string): Promise<void> {
 
   const inputRect = await getElementRect(session, 'input[name="q"]');
   if (inputRect) {
-    await mouseClick(session, inputRect.cx, inputRect.cy);
+    await xdoClick(inputRect.cx, inputRect.cy);
     await sleep(rand(400, 800));
   }
   await navigateAndWait(session, GOOGLE_URL(query));
@@ -269,7 +262,7 @@ export async function scrapeSerp(query: string, pages = 1): Promise<SerpResult> 
   await assertNoCaptcha(session);
 
   // Scroll through results naturally before scraping
-  await scrollPage(session);
+  await scrollPage();
   await sleep(rand(500, 1000));
 
   const serpUrl1 = GOOGLE_URL(query);
@@ -290,7 +283,7 @@ export async function scrapeSerp(query: string, pages = 1): Promise<SerpResult> 
     await sleep(rand(600, 1400));
     await assertNoCaptcha(session);
 
-    await scrollPage(session);
+    await scrollPage();
     await sleep(rand(400, 800));
 
     const html = await getPageHtml(session);
