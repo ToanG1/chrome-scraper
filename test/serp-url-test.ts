@@ -9,16 +9,6 @@
 
 const API_URL = process.env.API_URL ?? "http://localhost:3000";
 
-// ── URL builder ───────────────────────────────────────────────────────────────
-
-function meoUrl(query: string, lat: number, lon: number): string {
-  return (
-    `http://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
-    `&hl=ja&gl=jp&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1` +
-    `&uule=${lat},${lon}`
-  );
-}
-
 // ── Locations ─────────────────────────────────────────────────────────────────
 
 const LOCATIONS: { name: string; lat: number; lon: number }[] = [
@@ -49,13 +39,14 @@ const KEYWORDS = [
 interface TestCase {
   keyword: string;
   location: string;
-  url: string;
+  lat: number;
+  lon: number;
 }
 
 const cases: TestCase[] = [];
 for (const loc of LOCATIONS) {
   for (const kw of KEYWORDS) {
-    cases.push({ keyword: kw, location: loc.name, url: meoUrl(kw, loc.lat, loc.lon) });
+    cases.push({ keyword: kw, location: loc.name, lat: loc.lat, lon: loc.lon });
   }
 }
 
@@ -83,12 +74,12 @@ function htmlStats(html: string): { bytes: number; hasMeo: boolean } {
   };
 }
 
-// First keyword per location: organic omnibox search → Maps tab click (no URL params).
-async function fetchMeoOrganic(query: string): Promise<string> {
+// First keyword per location: uule URL to lock location, fallback to organic + geolocation override.
+async function fetchMeoOrganic(query: string, lat: number, lon: number): Promise<string> {
   const res = await fetch(`${API_URL}/fetch/meo-organic`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, lat, lon }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}) as { error?: string });
@@ -126,11 +117,11 @@ async function run(): Promise<void> {
   let lastLocation = "";
 
   for (let i = 0; i < cases.length; i++) {
-    const { keyword, location, url } = cases[i];
+    const { keyword, location, lat, lon } = cases[i];
     const t0 = Date.now();
 
-    // First keyword per location (or after CAPTCHA reset): full MEO URL.
-    // All others: type in the search box — Google keeps location context in session.
+    // First keyword per location: uule URL to pin Google's location, fallback to organic.
+    // Subsequent keywords: type in the search box (session keeps location context).
     const isFirstInLocation = location !== lastLocation;
     const method = isFirstInLocation ? "nav" : "box";
     if (isFirstInLocation) lastLocation = location;
@@ -139,7 +130,7 @@ async function run(): Promise<void> {
 
     try {
       const html = isFirstInLocation
-        ? await fetchMeoOrganic(keyword)
+        ? await fetchMeoOrganic(keyword, lat, lon)
         : await fetchSearchInBox(keyword);
       const elapsed = Date.now() - t0;
       const stats = htmlStats(html);

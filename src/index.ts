@@ -123,15 +123,18 @@ app.post("/fetch/seo", async (c) => {
   }
 });
 
-// POST /fetch/meo-organic  { "query": "sushi" }
-// Fully organic flow: google.co.jp homepage → omnibox keyword → Maps tab click.
-// No complex URL parameters — all actions produce isTrusted=true events.
+// POST /fetch/meo-organic  { "query": "sushi", "lat": 35.6762, "lon": 139.6503 }
+// When lat/lon provided: tries a uule URL first (locks session to target city), then falls
+// back to organic omnibox with geolocation override if uule triggers CAPTCHA.
+// Without lat/lon: pure organic flow using IP-based geolocation (legacy behaviour).
 app.post("/fetch/meo-organic", async (c) => {
-  const body = await c.req.json<{ query?: string }>().catch(() => null);
+  const body = await c.req.json<{ query?: string; lat?: number; lon?: number }>().catch(() => null);
   const query = body?.query?.trim();
+  const lat = body?.lat !== undefined ? Number(body.lat) : undefined;
+  const lon = body?.lon !== undefined ? Number(body.lon) : undefined;
   if (!query) return c.json({ error: "query is required" }, 400);
   try {
-    const html = await fetchMeoOrganic(query);
+    const html = await fetchMeoOrganic(query, lat, lon);
     return c.body(html, 200, { "Content-Type": "text/html; charset=utf-8" });
   } catch (err) {
     console.error("[meo-organic]", (err as Error).message);

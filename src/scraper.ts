@@ -217,20 +217,67 @@ async function fetchUrlWithProxy(url: string, proxy: string): Promise<string> {
   }
 }
 
-// Full organic MEO flow — no parameterized URLs, 100% human-like actions:
-//   1. CDP navigate to google.co.jp homepage (no params, safe)
-//   2. xdotool type keyword in omnibox → plain SERP (isTrusted=true, normal autocomplete)
-//   3. xdotool click the Maps/Local tab → MEO results
-// Subsequent keywords for the same location use searchInBox() instead.
-export async function fetchMeoOrganic(query: string): Promise<string> {
+// Encode lat/lon into Google's uule query parameter.
+// Binary: protobuf field-1 tag (0x0a) + varint length + UTF-8 "lat,lon" string.
+function encodeUule(lat: number, lon: number): string {
+  const loc = `${lat},${lon}`;
+  const locBuf = Buffer.from(loc, "utf8");
+  const binary = Buffer.concat([Buffer.from([0x0a, locBuf.length]), locBuf]);
+  return "w+CAIQICIm" + binary.toString("base64");
+}
+
+// Full organic MEO flow with optional explicit location:
+//   - If lat/lon provided: first try a direct uule URL to lock the session's location.
+//     Google Maps uses that pinned location for the local pack.
+//     If uule triggers CAPTCHA the tab is dropped (cookies preserved) and we fall back
+//     to the organic omnibox path below.
+//   - Organic path: google.co.jp homepage → omnibox keyword → Maps tab click.
+//     With geolocation override set to target coords, Maps shows results for that city.
+// Subsequent keywords for the same location use searchInBox() — session keeps location.
+export async function fetchMeoOrganic(query: string, lat?: number, lon?: number): Promise<string> {
   _lastRealRequest = Date.now();
+
+  // --- Attempt 1: uule URL (only when target location is specified) ---
+  if (lat !== undefined && lon !== undefined) {
+    const sessUule = await getSession();
+    await sessUule.send("Emulation.setGeolocationOverride", {
+      latitude: lat, longitude: lon, accuracy: 100,
+    });
+
+    const uule = encodeUule(lat, lon);
+    const uuleUrl =
+      `https://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
+      `&udm=1&uule=${encodeURIComponent(uule)}&hl=ja`;
+    await navigateAndWait(sessUule, uuleUrl);
+    await sleep(rand(1000, 1800));
+
+    const currentUrl = await getCurrentUrl(sessUule);
+    if (!currentUrl.includes("/sorry/")) {
+      console.log("[meo-organic] uule succeeded");
+      await scrollPage();
+      await sleep(rand(400, 800));
+      _isFirstSearch = false;
+      return getPageHtml(sessUule);
+    }
+
+    // Soft CAPTCHA on the uule URL — drop the tab without clearing cookies,
+    // so the profile's NID trust is preserved for the organic fallback.
+    console.log("[meo-organic] uule CAPTCHA — falling back to organic omnibox");
+    await closeSession();
+  }
+
+  // --- Attempt 2 (or only path when no lat/lon): organic omnibox ---
   const session = await getSession();
 
-  // Land on google.co.jp so the omnibox search defaults to the right domain
+  if (lat !== undefined && lon !== undefined) {
+    await session.send("Emulation.setGeolocationOverride", {
+      latitude: lat, longitude: lon, accuracy: 100,
+    });
+  }
+
   await navigateAndWait(session, "https://www.google.co.jp");
   await sleep(rand(600, 1200));
 
-  // Organic omnibox search — plain keyword, completely normal autocomplete telemetry
   const load1 = session.waitForEvent("Page.loadEventFired", 15000);
   await xdoOmniboxSearch(query);
   await load1.catch(() => {});
