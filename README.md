@@ -1,20 +1,23 @@
 # chrome-scraper
 
-A production-ready Google SERP scraper built on **raw Chrome DevTools Protocol (CDP)** — no Puppeteer, no Playwright. Controls a real Chrome browser via WebSocket, runs headed inside Docker with noVNC for visual access.
+A production-ready Google SERP / MEO scraper built on **raw Chrome DevTools Protocol (CDP)** — no Puppeteer, no Playwright. Controls a real Chrome browser via WebSocket inside Docker with Xvfb + noVNC.
 
 ## Features
 
 - **Raw CDP** — direct WebSocket communication with Chrome, zero browser automation frameworks
-- **Persistent session** — single Chrome tab reused across all queries (natural browsing history)
-- **MEO / SEO endpoints** — location-pinned SERP fetching via `sll`/`fll` parameters (no proxy needed)
-- **Multi-page** — scrape 1–10 result pages per query (`&start=N` pagination)
-- **Human-like behavior** — random scrolling, result click-throughs, random site visits between searches
-- **Stealth JS** — masks `navigator.webdriver`, spoofs WebGL renderer, hardware concurrency, device memory
-- **CAPTCHA detection + auto-recovery** — detects `/sorry/` redirects, clears cookies/cache via CDP, resumes automatically
-- **Per-request proxy** — isolated browser context per request via `Target.createBrowserContext` (no Chrome restart)
-- **Geolocation** — auto-detects public IP coordinates via ip-api.com, injects via `Emulation.setGeolocationOverride`
-- **noVNC** — watch the browser live at `http://localhost:6080/vnc.html`
+- **Persistent session** — single Chrome tab reused across all queries (natural browsing history + cookie trust)
+- **Profile persistence** — Chrome profile stored in a Docker named volume; survives `docker compose restart`
+- **MEO batch endpoint** — one call fetches all keywords for a location using the hybrid approach (0 CAPTCHA in 50-request tests)
+- **Location targeting** — `uule=lat,lon` on `google.co.jp` correctly pins the Maps local pack to any Japanese city, no proxy required after profile warmup
+- **Idle browsing** — background loop opens organic Google search results in new tabs to continuously build NID cookie trust
+- **CTR signals** — every real API request also opens a linked business website in a background tab (fire-and-forget)
+- **Stealth JS** — masks `navigator.webdriver`, spoofs WebGL renderer/vendor, canvas noise, hardware concurrency, device memory, plugins, `window.chrome`
+- **CAPTCHA detection + recovery** — detects `/sorry/` redirects, clears session cookies/cache via CDP, resumes automatically
+- **Per-request proxy** — isolated browser context per request via `Target.createBrowserContext`
+- **noVNC** — watch Chrome live at `http://localhost:6080/vnc.html`
 - **TypeScript** — fully typed, runs via `tsx` with no build step
+
+---
 
 ## Quick Start
 
@@ -24,152 +27,161 @@ cd chrome-scraper
 docker compose up -d
 ```
 
-Wait ~10 seconds for Chrome to start, then:
+Wait ~15 seconds for Chrome to start:
 
 ```bash
-# Health check
 curl http://localhost:3000/health
-
-# MEO — sushi near Shinjuku, Tokyo
-curl -X POST http://localhost:3000/fetch/meo \
-  -H "Content-Type: application/json" \
-  -d '{"query":"sushi","lat":35.689487,"lon":139.691711}'
-
-# SEO — organic sushi results near Tokyo
-curl -X POST http://localhost:3000/fetch/seo \
-  -H "Content-Type: application/json" \
-  -d '{"query":"sushi","lat":35.689487,"lon":139.691711}'
+# → { "status": "ok", "browser": "Chrome/149.x.x.x" }
 ```
 
-Open **http://localhost:6080/vnc.html** in your browser to watch Chrome in real time.
+> **Important:** Run the container for at least **24 hours** before production use.
+> The idle browsing loop builds NID cookie trust during this time.
+> A cold profile will get CAPTCHA'd almost immediately on parameterised SERP URLs.
+
+---
 
 ## API
 
 ### `GET /health`
 Returns Chrome version and server status.
 
-```json
-{ "status": "ok", "browser": "Chrome/149.0.7827.114" }
+### `POST /fetch/meo-batch` — recommended production endpoint
+
+Runs the full hybrid flow (1 direct URL → N `searchInBox`) for a location batch in a single call. Proven 0 CAPTCHA in 50-request tests across 5 Japanese cities.
+
+**lat/lon shorthand:**
+```bash
+curl -X POST http://localhost:3000/fetch/meo-batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "lat": 35.6762,
+    "lon": 139.6503,
+    "keywords": ["sushi", "ramen", "居酒屋", "カフェ", "ホテル"],
+    "html": false
+  }'
 ```
 
-### `POST /search`
-Organic SERP scraper with structured JSON output.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `query` | string | Search query |
-| `pages` | number | Pages to scrape (1–10, default 1) |
-
-```json
-{
-  "query": "nodejs best practices",
-  "organic": [
-    { "title": "...", "url": "...", "snippet": "...", "page": 1 }
-  ],
-  "featuredSnippet": null,
-  "totalResults": 47,
-  "pagesScraped": 1,
-  "scrapedAt": "2026-06-17T10:00:00.000Z"
-}
+**Custom URL template (full param control):**
+```bash
+curl -X POST http://localhost:3000/fetch/meo-batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "templateUrl": "https://www.google.co.jp/search?q={query}&hl=ja&gl=jp&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1&uule=35.6762,139.6503",
+    "keywords": ["sushi", "ramen", "居酒屋"]
+  }'
 ```
 
-### `POST /search/batch`
-| Field | Type | Description |
-|-------|------|-------------|
-| `queries` | string[] | Up to 20 queries |
-| `pages` | number | Pages per query (1–10) |
+`{query}` is replaced with `encodeURIComponent(keyword)` for the first keyword. Subsequent keywords use the search box (no parameterised URL → no CAPTCHA risk).
+
+**Response** (one entry per keyword):
+```json
+[
+  { "keyword": "sushi",  "method": "url", "ok": true, "bytes": 718000, "meo": true },
+  { "keyword": "ramen",  "method": "box", "ok": true, "bytes": 718000, "meo": true },
+  { "keyword": "居酒屋", "method": "box", "ok": true, "bytes": 718000, "meo": true }
+]
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `lat` / `lon` | number | Target coordinates (shorthand form) |
+| `templateUrl` | string | Must contain `{query}` literal (template form) |
+| `keywords` | string[] | 1–20 keywords; first uses direct URL, rest use search box |
+| `html` | boolean | Include full HTML in response (default `true`); `false` for metadata only |
+
+---
 
 ### `POST /fetch/meo`
-Fetches Google Maps / local pack results for a specific coordinate.
-Returns raw HTML — parse with Cheerio for structured data.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `query` | string | Search query (e.g. `"sushi"`) |
-| `lat` | number | Latitude of the target location |
-| `lon` | number | Longitude of the target location |
+Single direct URL fetch. Use this when you want to call one keyword at a time or manage the hybrid flow yourself.
 
 ```bash
 curl -X POST http://localhost:3000/fetch/meo \
   -H "Content-Type: application/json" \
-  -d '{"query":"ラーメン","lat":34.6937,"lon":135.5023}'
+  -d '{"query":"sushiro","lat":35.689487,"lon":139.691711}'
 ```
 
-### `POST /fetch/seo`
-Fetches 100 organic results pinned to a coordinate via `sll`.
+Returns raw HTML. Session location is locked to `lat`/`lon` for the next `/fetch/search-in-box` calls.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `query` | string | Search query |
-| `lat` | number | Latitude |
-| `lon` | number | Longitude |
+### `POST /fetch/search-in-box`
+Types a new keyword into the search box of the current SERP. Google keeps the location context set by the previous `/fetch/meo` call.
+
+```bash
+curl -X POST http://localhost:3000/fetch/search-in-box \
+  -H "Content-Type: application/json" \
+  -d '{"query":"ラーメン"}'
+```
+
+### `POST /fetch/meo-organic`
+Organic flow: navigates to `google.co.jp` homepage → types keyword in omnibox → clicks the Maps tab. No parameterised URL. Used as a CAPTCHA fallback when direct URL is blocked.
+
+Accepts optional `lat`/`lon` for geolocation override + direct URL first attempt.
+
+### `POST /fetch/seo`
+Organic SERP pinned to coordinates.
+
+| Field | Type |
+|-------|------|
+| `query` | string |
+| `lat` | number |
+| `lon` | number |
+
+### `POST /search`
+Structured JSON output — organic results, featured snippet, total count.
+
+| Field | Type |
+|-------|------|
+| `query` | string |
+| `pages` | number (1–10) |
+
+### `POST /search/batch`
+Up to 20 queries in one call. Same fields as `/search` plus `queries: string[]`.
 
 ### `POST /fetch`
-Raw URL fetch — navigate Chrome to any custom URL and return HTML.
-Optionally pass `proxy` to route through a specific IP.
+Raw URL fetch — navigates Chrome to any URL and returns HTML. Optional `proxy` creates an isolated browser context.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `url` | string | Full URL to fetch |
-| `proxy` | string? | `http://user:pass@host:port` — creates isolated browser context |
+| Field | Type |
+|-------|------|
+| `url` | string |
+| `proxy` | string? (`http://user:pass@host:port`) |
+| `warmUpQuery` | string? | Do a plain Google search first (once per session) |
 
 ---
 
-## Location Targeting (MEO / SEO)
+## Location Targeting
 
 ### How it works
 
-Google SERP location is controlled by two independent systems:
-
-| System | Parameter | Controls |
-|--------|-----------|----------|
-| Search location | `sll`, `fll` | Which area Google searches in |
-| Browser location | `Emulation.setGeolocationOverride` | What the browser reports as GPS |
-| Footer display | IP geolocation | The "● City" shown in the footer |
-
-The footer showing **不明** (unknown) is normal when running from a non-JP server — it reflects the browser's GPS permission, not the search area. The `sll`/`fll` parameters control actual search results independently.
-
-### sll / fll parameters
-
-These are the parameters Google adds when you click **"Search this area"** on a Maps result page. They define a geographic viewport for the search:
+`uule=lat,lon` on `google.co.jp` correctly pins the Maps local pack to any Japanese city **from any IP** — provided the Chrome profile has at least 24 hours of NID cookie trust built up.
 
 ```
-sll=35.689487,139.691711   — search center (lat,lon)
-fll=35.689487,139.691711   — map focus center (same value)
-fspn=0.04,0.065            — viewport span (~4km radius)
-sspn=0.04,0.065            — search span
-fz=14 / sz=14              — zoom level
-stq=1                      — "search this area" flag
-cs=0
+https://www.google.co.jp/search?q=sushi&hl=ja&gl=jp&pws=0&npsic=0
+  &rflfq=1&rldoc=1&rlha=0&sa=X&udm=1&uule=35.6762,139.6503
 ```
 
-**Key finding:** `sll`/`fll` work from **any IP address** — no proxy or VPN required. The raw `uule=lat,lon` format does NOT work without a matching IP.
+Google also checks `Emulation.setGeolocationOverride` (Chrome's Geolocation API). The scraper sets both before every `/fetch/meo` call.
 
-### Why raw uule=lat,lon fails
+### CAPTCHA tolerance by approach
 
-```
-uule=35.689487,139.691711   ← Google ignores this when IP doesn't match
-sll=35.689487,139.691711    ← Google uses this regardless of IP ✓
-```
+| Approach | Profile | Result |
+|---|---|---|
+| Direct URL every request, cold profile | Fresh | Immediate CAPTCHA (request 1) |
+| Direct URL every request, warmed profile | 24h warmup | CAPTCHA after ~5 consecutive requests |
+| **Hybrid: 1 direct URL + searchInBox after** | **24h warmup** | **0/50 CAPTCHA** ✓ |
 
-Google only respects raw coordinate `uule` values when the request IP geolocates to the same country. The `sll` "search this area" parameters bypass this restriction entirely.
+See [FINDINGS.md](FINDINGS.md) for full details.
 
-### Why uule city-name encoding also fails
+---
 
-The base64 city-name `uule` format (`w+CAIQICI...`) requires an exact canonical location name from Google's geocoding database. Common formats like `"Tokyo, Japan"` or `"Tokyo,japan"` are not recognized and silently fall back to IP geolocation.
+## Profile Warmup
 
-### Per-request proxy (optional)
+The idle browsing loop runs continuously in the background:
 
-For cases where you need precise IP matching (e.g. integrating with Bright Data's residential proxy network), the `/fetch` endpoint accepts a `proxy` parameter. Chrome creates an **isolated browser context** (`Target.createBrowserContext`) for each proxied request — no shared cookies, no Chrome restart:
+- **5 permanent idle tabs** — Google Maps + 4 themed search tabs (food, beauty, local, news)
+- Each cycle: organic Google search → extract result URLs → open in new background tab → scroll → optionally follow a same-domain link → close tab
+- **CTR on real requests** — every `/fetch/meo` call also opens the first linked business URL in a background tab (fire-and-forget)
+- Interval: 3–8 minutes between cycles; 90-second cooldown after any real API request
 
-```bash
-curl -X POST http://localhost:3000/fetch \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "http://www.google.co.jp/search?q=sushi&udm=1&sll=35.689487,139.691711",
-    "proxy": "http://user-country-jp-city-tokyo:pass@gateway.brightdata.com:24000"
-  }'
-```
+After 24 hours: ~1.5 GB profile, 1,200+ cookies across 344 domains, active NID on `google.com` and `google.co.jp`.
 
 ---
 
@@ -177,68 +189,53 @@ curl -X POST http://localhost:3000/fetch \
 
 ```
 src/
-├── index.ts      Hono HTTP server (routes: /search, /fetch, /fetch/meo, /fetch/seo)
-├── scraper.ts    CDP session, navigation, human-like behaviors, proxy context
-├── browser.ts    CDPSession class, tab helpers, browser context helpers
-├── parser.ts     Cheerio HTML parser (Google organic SERP selectors)
+├── index.ts      Hono HTTP server — all routes
+├── scraper.ts    CDP session, navigation, fetchMeoBatch, idle tab management
+├── browser.ts    CDPSession WebSocket wrapper, tab helpers
+├── idle.ts       Background idle loop (3–8 min intervals)
+├── parser.ts     Cheerio HTML parser (organic SERP selectors)
 └── stealth.ts    Anti-detection JS injected before page scripts
 
 test/
-├── keywords.ts        100 keywords (English / Vietnamese / Japanese)
-├── stress.ts          Stress test: 100 keywords × N pages with pacing
-└── serp-url-test.ts   MEO + SEO location test: 5 cities × 10 keywords × 2 types
+├── serp-url-test.ts    Hybrid stress test: 5 cities × 10 keywords (50 req, 0 CAPTCHA)
+├── direct-url-test.ts  Full direct URL test: measures raw CAPTCHA tolerance
+├── stress.ts           General SERP stress test
+└── keywords.ts         100 keywords (EN / JA)
 ```
 
-### How it works
+### Request flow (`/fetch/meo-batch`)
 
-1. On first request, opens a Chrome tab via `PUT /json/new` and connects via WebSocket
-2. Injects stealth JS via `Page.addScriptToEvaluateOnNewDocument`
-3. Sets geolocation to match public IP via `Emulation.setGeolocationOverride` + `Browser.grantPermissions`
-4. For `/fetch/meo` and `/fetch/seo`: builds URL with `sll`/`fll` coordinates, navigates, scrolls, returns HTML
-5. For `/search`: navigates `google.com/search?q=...`, parses organic results with Cheerio
-6. Between searches (40% chance): visits a random developer site (GitHub, MDN, HN, etc.)
-7. After page 1 (35% chance): clicks through to a top-3 organic result, dwells, returns
-8. Tab is never closed — session cookie and history persist across queries
+```
+Client → POST /fetch/meo-batch { lat, lon, keywords }
+  │
+  ├─ keywords[0] → fetchUrl(uule URL)
+  │    ├─ humanSearch warmup (first session only)
+  │    ├─ Page.navigate → Maps local pack SERP
+  │    ├─ assertNoCaptcha
+  │    ├─ scrollPage
+  │    └─ openResultTabAsync → browseUrlInNewTab (background, no await)
+  │
+  ├─ keywords[1..N] → searchInBox
+  │    ├─ xdoClick search box → xdoReplaceText → Enter
+  │    ├─ assertNoCaptcha
+  │    └─ scrollPage
+  │
+  └─ return [{ keyword, method, ok, bytes, meo, html }]
+```
 
 ### CAPTCHA handling
 
-Google flags automation by storing a CAPTCHA token in the Chrome profile cookies (`/tmp/chrome-profile`). Once flagged, every subsequent request to Google immediately redirects to `/sorry/`.
-
-**Automatic resolution flow:**
-
 ```
-1. After every navigation, check document.location.href via CDP
-2. URL contains /sorry/ → CAPTCHA detected
-3. Set _captchaHit = true, close tab, throw CaptchaError (HTTP 500)
-4. Next request calls getSession() → sees _captchaHit = true
-5. Network.clearBrowserCookies + Network.clearBrowserCache via CDP
-   (equivalent to docker compose down && up — wipes the CAPTCHA flag)
-6. _captchaHit = false, fresh geolocation + stealth JS injected
-7. Scraping continues normally
+1. assertNoCaptcha checks document.location.href via CDP after every navigation
+2. URL contains /sorry/ → _captchaHit = true, closeSession(), throw CaptchaError
+3. Next getSession() sees _captchaHit = true:
+   → Network.clearBrowserCookies + Network.clearBrowserCache
+   → Storage.clearDataForOrigin for google.com + google.co.jp
+   → _captchaHit = false, fresh tab, stealth JS + geolocation re-applied
 ```
 
-Verified live: 8 CAPTCHAs auto-resolved in a single 20-keyword batch run.
-
----
-
-## Stress Test
-
-```bash
-# Against local Docker
-npx tsx test/stress.ts
-
-# Against remote
-API_URL=http://your-server:3000 npx tsx test/stress.ts
-```
-
-## MEO + SEO Location Test
-
-```bash
-npx tsx test/serp-url-test.ts
-```
-
-Tests 5 Japanese cities × 10 keywords × 2 types (MEO + SEO) = 100 requests.
-Verifies that `meo=true` / `seo=true` signal presence in returned HTML for each location.
+> **Note:** Cookie clear resets NID trust. Recovery takes ~30–60 min of idle browsing.
+> Prevention: always use the hybrid flow (max 1 direct URL per location group).
 
 ---
 
@@ -251,21 +248,25 @@ services:
     ports:
       - "3000:3000"   # API
       - "6080:6080"   # noVNC
+    volumes:
+      - chrome-profile:/tmp/chrome-profile   # profile persistence across restarts
     shm_size: "2gb"
     environment:
       - PORT=3000
-      - PROXY_SERVER=   # optional: http://user:pass@host:port for global Chrome proxy
+      - PROXY_SERVER=   # optional: host:port for global Chrome proxy
+
+volumes:
+  chrome-profile:
 ```
 
-The container runs as the non-root `node` user so Chrome doesn't need `--no-sandbox`.
+The container runs as the non-root `node` user — Chrome doesn't need `--no-sandbox`.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP server port |
-| `CHROME_DEBUG_URL` | `http://localhost:9222` | Chrome DevTools endpoint |
-| `PROXY_SERVER` | _(none)_ | Global proxy for Chrome (all requests). Per-request proxy via `/fetch` body takes precedence. |
+| `PROXY_SERVER` | _(none)_ | Global proxy for Chrome (`host:port`). Per-request proxy via `/fetch` body takes precedence. |
 
 ## Tech Stack
 
@@ -274,4 +275,5 @@ The container runs as the non-root `node` user so Chrome doesn't need `--no-sand
 - **Browser**: Google Chrome (real, headed), controlled via raw CDP WebSocket
 - **Parsing**: [Cheerio](https://cheerio.js.org)
 - **Display**: Xvfb + x11vnc + noVNC
-- **Fonts**: `fonts-noto`, `fonts-noto-cjk` (Vietnamese + Japanese support)
+- **Input**: xdotool (keyboard/mouse simulation) + xsel (clipboard for CJK text)
+- **Fonts**: `fonts-noto`, `fonts-noto-cjk` (Japanese support)
