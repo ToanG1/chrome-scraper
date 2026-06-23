@@ -340,6 +340,61 @@ export async function searchInBox(query: string): Promise<string> {
   return getPageHtml(session);
 }
 
+export interface BatchResult {
+  keyword: string;
+  method: "url" | "box";
+  ok: boolean;
+  html: string;
+  error?: string;
+}
+
+// Batch MEO fetch for a single location:
+//   keywords[0] → direct URL (templateUrl with {query} replaced) — establishes location context
+//   keywords[1..] → searchInBox — inherits Google's session location, no parameterised URL
+//
+// templateUrl must contain the literal string "{query}" which is replaced with
+// encodeURIComponent(keyword). Example:
+//   https://www.google.co.jp/search?q={query}&hl=ja&gl=jp&pws=0&npsic=0
+//   &rflfq=1&rldoc=1&rlha=0&sa=X&udm=1&uule=35.6762,139.6503
+//
+// If the first URL request fails (CAPTCHA or error) the remaining keywords are
+// marked skipped so the caller always gets one entry per keyword.
+export async function fetchMeoBatch(templateUrl: string, keywords: string[]): Promise<BatchResult[]> {
+  if (keywords.length === 0) return [];
+  const results: BatchResult[] = [];
+
+  // — keyword[0]: direct URL —
+  const firstKw = keywords[0];
+  const firstUrl = templateUrl.replace("{query}", encodeURIComponent(firstKw));
+  try {
+    const html = await fetchUrl(firstUrl, undefined, firstKw);
+    results.push({ keyword: firstKw, method: "url", ok: true, html });
+  } catch (err) {
+    const msg = (err as Error).message;
+    console.error(`[meo-batch] first URL failed (${firstKw}): ${msg}`);
+    results.push({ keyword: firstKw, method: "url", ok: false, html: "", error: msg });
+    // No SERP context — mark the rest as skipped and return early
+    for (const kw of keywords.slice(1)) {
+      results.push({ keyword: kw, method: "box", ok: false, html: "", error: "skipped: first request failed" });
+    }
+    return results;
+  }
+
+  // — keywords[1..]: searchInBox —
+  for (const kw of keywords.slice(1)) {
+    try {
+      const html = await searchInBox(kw);
+      results.push({ keyword: kw, method: "box", ok: true, html });
+    } catch (err) {
+      const msg = (err as Error).message;
+      console.error(`[meo-batch] box failed (${kw}): ${msg}`);
+      results.push({ keyword: kw, method: "box", ok: false, html: "", error: msg });
+    }
+  }
+
+  return results;
+}
+
 // Opens all idle tabs at startup and loads their initial pages.
 // These tabs stay alive permanently; idleBrowse() interacts within them.
 // Completely separate from the real-request tab — no race condition possible.

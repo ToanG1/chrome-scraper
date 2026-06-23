@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { scrapeSerp, fetchUrl, fetchMeoOrganic, searchInBox, closeSession, initIdleTabs } from "./scraper";
+import { scrapeSerp, fetchUrl, fetchMeoOrganic, searchInBox, fetchMeoBatch, closeSession, initIdleTabs } from "./scraper";
 import { healthCheck } from "./browser";
 import { startIdleBrowsing, stopIdleBrowsing } from "./idle";
 
@@ -137,6 +137,67 @@ app.post("/fetch/meo-organic", async (c) => {
     return c.body(html, 200, { "Content-Type": "text/html; charset=utf-8" });
   } catch (err) {
     console.error("[meo-organic]", (err as Error).message);
+    return c.json({ error: (err as Error).message }, 500);
+  }
+});
+
+// POST /fetch/meo-batch  — recommended production endpoint
+// Runs the hybrid approach (1 direct URL + N searchInBox) in a single call.
+//
+// Body — templateUrl form (full control over URL params):
+//   { "templateUrl": "https://www.google.co.jp/search?q={query}&hl=ja&gl=jp&...&uule=35.6762,139.6503",
+//     "keywords": ["sushi", "ramen", "居酒屋"] }
+//
+// Body — lat/lon shorthand (builds the standard MEO URL automatically):
+//   { "lat": 35.6762, "lon": 139.6503, "keywords": ["sushi", "ramen", "居酒屋"] }
+//
+// Response: JSON array, one entry per keyword:
+//   [{ keyword, method:"url"|"box", ok, bytes, meo, html?, error? }]
+//   html is included by default; pass "html": false to strip it (metadata only).
+app.post("/fetch/meo-batch", async (c) => {
+  const body = await c
+    .req.json<{ templateUrl?: string; lat?: number; lon?: number; keywords?: string[]; html?: boolean }>()
+    .catch(() => null);
+  if (!body) return c.json({ error: "invalid JSON body" }, 400);
+
+  const keywords = (body.keywords ?? []).map((k) => k.trim()).filter(Boolean);
+  if (keywords.length === 0) return c.json({ error: "keywords must be a non-empty array" }, 400);
+  if (keywords.length > 20) return c.json({ error: "max 20 keywords per batch" }, 400);
+
+  let templateUrl: string;
+  if (body.templateUrl) {
+    if (!body.templateUrl.includes("{query}"))
+      return c.json({ error: 'templateUrl must contain the literal string {query}' }, 400);
+    templateUrl = body.templateUrl;
+  } else if (body.lat !== undefined && body.lon !== undefined) {
+    const lat = Number(body.lat);
+    const lon = Number(body.lon);
+    if (!lat || !lon) return c.json({ error: "lat and lon must be non-zero numbers" }, 400);
+    templateUrl =
+      `https://www.google.co.jp/search?q={query}` +
+      `&hl=ja&gl=jp&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1` +
+      `&uule=${lat},${lon}`;
+  } else {
+    return c.json({ error: "provide either templateUrl or lat+lon" }, 400);
+  }
+
+  const includeHtml = body.html !== false;  // true by default
+
+  try {
+    const results = await fetchMeoBatch(templateUrl, keywords);
+    return c.json(
+      results.map((r) => ({
+        keyword: r.keyword,
+        method:  r.method,
+        ok:      r.ok,
+        bytes:   r.html.length,
+        meo:     r.html.includes("rllt__") || r.html.includes("hqp_pb") || r.html.includes("data-cid"),
+        ...(includeHtml ? { html: r.html } : {}),
+        ...(r.error    ? { error: r.error } : {}),
+      }))
+    );
+  } catch (err) {
+    console.error("[meo-batch]", (err as Error).message);
     return c.json({ error: (err as Error).message }, 500);
   }
 });

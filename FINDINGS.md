@@ -65,18 +65,49 @@ After CAPTCHA, the session's cookies are cleared (NID trust reset), making subse
 
 ## 3. Recommended Production Flow
 
-```
-For each new location:
-  1. POST /fetch/meo  { query: "keyword1", lat: X, lon: Y }
-     → sets uule in URL, locks session location, builds Maps local pack
+### Single-call batch endpoint (recommended)
 
-For each additional keyword at the same location:
-  2. POST /fetch/search-in-box  { query: "keyword2" }
-  3. POST /fetch/search-in-box  { query: "keyword3" }
-  ...
-     → types in the existing SERP search box
-     → Google keeps the uule/location context from step 1
-     → no new URL parameters, no CAPTCHA risk
+```
+POST /fetch/meo-batch
+{
+  "lat": 35.6762,
+  "lon": 139.6503,
+  "keywords": ["sushi", "ramen", "居酒屋", "カフェ", "ホテル"],
+  "html": false          // omit html bodies, return metadata only
+}
+```
+
+Or with a custom URL template (full control over params):
+
+```
+POST /fetch/meo-batch
+{
+  "templateUrl": "https://www.google.co.jp/search?q={query}&hl=ja&gl=jp&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1&uule=35.6762,139.6503",
+  "keywords": ["sushi", "ramen", "居酒屋"]
+}
+```
+
+The `{query}` placeholder is replaced with `encodeURIComponent(keyword)` for the first keyword. Subsequent keywords use `searchInBox`. The server handles the hybrid flow automatically.
+
+Response (one entry per keyword):
+```json
+[
+  { "keyword": "sushi",  "method": "url", "ok": true, "bytes": 718000, "meo": true },
+  { "keyword": "ramen",  "method": "box", "ok": true, "bytes": 718000, "meo": true },
+  { "keyword": "居酒屋", "method": "box", "ok": true, "bytes": 718000, "meo": true }
+]
+```
+
+Add `"html": true` (default) to receive full HTML in each entry for rank parsing.
+
+### Manual multi-call flow (fine-grained control)
+
+```
+POST /fetch/meo              { query: "keyword1", lat: X, lon: Y }   ← direct URL, locks location
+POST /fetch/search-in-box    { query: "keyword2" }                    ← box, keeps context
+POST /fetch/search-in-box    { query: "keyword3" }
+...
+POST /fetch/meo              { query: "keyword1", lat: X2, lon: Y2 } ← new location
 ```
 
 **Minimum pause between requests:** 15 seconds. Recommended 15–25 seconds.
