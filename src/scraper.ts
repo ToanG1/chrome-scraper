@@ -178,6 +178,7 @@ export async function fetchUrl(url: string, proxy?: string, warmUpQuery?: string
   await assertNoCaptcha(session);
   await scrollPage();
   await sleep(rand(400, 800));
+  openResultTabAsync(session);
   return getPageHtml(session);
 }
 
@@ -217,56 +218,72 @@ async function fetchUrlWithProxy(url: string, proxy: string): Promise<string> {
   }
 }
 
-// Encode lat/lon into Google's uule query parameter.
-// Binary: protobuf field-1 tag (0x0a) + varint length + UTF-8 "lat,lon" string.
-function encodeUule(lat: number, lon: number): string {
-  const loc = `${lat},${lon}`;
-  const locBuf = Buffer.from(loc, "utf8");
-  const binary = Buffer.concat([Buffer.from([0x0a, locBuf.length]), locBuf]);
-  return "w+CAIQICIm" + binary.toString("base64");
+// Google's full MEO URL format — same params confirmed working with mature profile.
+function meoSearchUrl(query: string, lat: number, lon: number): string {
+  return (
+    `https://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
+    `&hl=ja&gl=jp&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1` +
+    `&uule=${lat},${lon}`
+  );
 }
 
-// Full organic MEO flow with optional explicit location:
-//   - If lat/lon provided: first try a direct uule URL to lock the session's location.
-//     Google Maps uses that pinned location for the local pack.
-//     If uule triggers CAPTCHA the tab is dropped (cookies preserved) and we fall back
-//     to the organic omnibox path below.
-//   - Organic path: google.co.jp homepage → omnibox keyword → Maps tab click.
-//     With geolocation override set to target coords, Maps shows results for that city.
-// Subsequent keywords for the same location use searchInBox() — session keeps location.
+// After loading a SERP, open one result in a new background tab (fire-and-forget).
+// Prefers Maps place links (MEO-relevant), falls back to first organic result.
+// Called during real API requests so every fetch also leaves a CTR signal.
+function openResultTabAsync(session: CDPSession): void {
+  session.send("Runtime.evaluate", {
+    expression: `(function() {
+      // 1. MEO: external business website linked from local pack result
+      const external = Array.from(document.querySelectorAll('a[href^="https://"]'))
+        .find(a => { try { return !new URL(a.href).hostname.includes('google'); } catch { return false; } });
+      if (external) return external.href;
+      // 2. Organic: first h3 result link
+      const h3 = Array.from(document.querySelectorAll('h3')).find(h => h.closest('a[href]'));
+      return h3 ? h3.closest('a[href]').href : null;
+    })()`,
+    returnByValue: true,
+  }).then((res: unknown) => {
+    const url = (res as { result?: { value?: string | null } })?.result?.value;
+    if (url && !url.includes('/sorry/')) {
+      console.log(`[ctr] opening result tab: ${url.slice(0, 80)}…`);
+      browseUrlInNewTab(url).catch(() => {});
+    }
+  }).catch(() => {});
+}
+
+// Full direct URL MEO flow with optional explicit location.
+// Primary path: navigate to google.co.jp MEO URL (hl=ja, gl=jp, full params + uule=lat,lon).
+// CAPTCHA fallback: organic omnibox with geolocation override.
+// Subsequent keywords at the same location use searchInBox() — session keeps location context.
 export async function fetchMeoOrganic(query: string, lat?: number, lon?: number): Promise<string> {
   _lastRealRequest = Date.now();
 
-  // --- Attempt 1: uule URL (only when target location is specified) ---
+  // --- Primary: direct MEO URL (fastest, works with mature profile) ---
   if (lat !== undefined && lon !== undefined) {
     const sessUule = await getSession();
     await sessUule.send("Emulation.setGeolocationOverride", {
       latitude: lat, longitude: lon, accuracy: 100,
     });
 
-    const uule = encodeUule(lat, lon);
-    const uuleUrl =
-      `https://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
-      `&udm=1&uule=${encodeURIComponent(uule)}&hl=ja`;
-    await navigateAndWait(sessUule, uuleUrl);
+    await navigateAndWait(sessUule, meoSearchUrl(query, lat, lon));
     await sleep(rand(1000, 1800));
 
     const currentUrl = await getCurrentUrl(sessUule);
     if (!currentUrl.includes("/sorry/")) {
-      console.log("[meo-organic] uule succeeded");
+      console.log("[meo-organic] direct URL succeeded");
       await scrollPage();
       await sleep(rand(400, 800));
+      openResultTabAsync(sessUule);
       _isFirstSearch = false;
       return getPageHtml(sessUule);
     }
 
-    // Soft CAPTCHA on the uule URL — drop the tab without clearing cookies,
-    // so the profile's NID trust is preserved for the organic fallback.
-    console.log("[meo-organic] uule CAPTCHA — falling back to organic omnibox");
+    // CAPTCHA: drop tab without clearing cookies, fall through to organic
+    console.log("[meo-organic] direct URL CAPTCHA — falling back to organic omnibox");
     await closeSession();
   }
 
-  // --- Attempt 2 (or only path when no lat/lon): organic omnibox ---
+  // --- Fallback: organic omnibox + geolocation override ---
   const session = await getSession();
 
   if (lat !== undefined && lon !== undefined) {
@@ -284,7 +301,6 @@ export async function fetchMeoOrganic(query: string, lat?: number, lon?: number)
   await sleep(rand(1000, 1800));
   await assertNoCaptcha(session);
 
-  // Click the Maps / Local results tab (udm=1 link in the tab bar)
   const mapsTab = await getElementRect(session, 'a[href*="udm=1"]');
   if (mapsTab) {
     const load2 = session.waitForEvent("Page.loadEventFired", 15000);
@@ -296,6 +312,7 @@ export async function fetchMeoOrganic(query: string, lat?: number, lon?: number)
 
   await scrollPage();
   await sleep(rand(400, 800));
+  openResultTabAsync(session);
   _isFirstSearch = false;
   return getPageHtml(session);
 }
