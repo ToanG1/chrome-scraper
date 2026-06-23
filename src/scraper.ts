@@ -53,7 +53,7 @@ let _captchaHit = false;
 let _lastRealRequest = 0;
 
 // Minimum quiet time before idle browsing is allowed to run (ms)
-const IDLE_COOLDOWN = 120_000;
+const IDLE_COOLDOWN = 90_000;
 
 // ── Idle tab management ───────────────────────────────────────────────────────
 
@@ -377,7 +377,52 @@ async function interactWithIdleTab(tab: IdleTab): Promise<void> {
   }
 }
 
-// Google Maps tab — search for a local query, scroll, optionally click a place listing
+// Open a URL in a fresh temporary tab, browse it (scroll + maybe an internal click),
+// then close the tab. Simulates a user opening a search result in a new tab.
+async function browseUrlInNewTab(url: string): Promise<void> {
+  let tab: { id: string; webSocketDebuggerUrl: string } | null = null;
+  try {
+    tab = await openTab();
+    const s = await connectTab(tab.webSocketDebuggerUrl);
+    await s.send("Page.enable");
+    await s.send("Network.enable");
+    await s.send("Page.addScriptToEvaluateOnNewDocument", { source: STEALTH_JS });
+    const load = s.waitForEvent("Page.loadEventFired", 15000);
+    await s.send("Page.navigate", { url });
+    await load.catch(() => {});
+    await sleep(rand(2000, 4000));
+    await cdpScroll(s);
+    await sleep(rand(1500, 3000));
+    await cdpScroll(s);
+    await sleep(rand(1000, 2500));
+    // ~40%: click one same-domain link to simulate deeper browsing
+    if (Math.random() < 0.4) {
+      await s.send("Runtime.evaluate", {
+        expression: `(function() {
+          const host = location.hostname;
+          const links = Array.from(document.querySelectorAll('a[href]')).filter(a => {
+            try {
+              const u = new URL(a.href);
+              const r = a.getBoundingClientRect();
+              return u.hostname === host && u.pathname !== location.pathname
+                && r.width > 0 && r.height > 0 && r.top > 60 && r.top < window.innerHeight - 60;
+            } catch { return false; }
+          });
+          if (links.length) links[Math.floor(Math.random() * Math.min(links.length, 5))].click();
+        })()`,
+        awaitPromise: false,
+      });
+      await sleep(rand(4000, 8000));
+      await cdpScroll(s);
+      await sleep(rand(2000, 4000));
+    }
+    s.close();
+  } finally {
+    if (tab) closeTab(tab.id).catch(() => {});
+  }
+}
+
+// Google Maps tab — search for a local query, scroll, open a place detail in a new tab
 async function interactMapsTab(s: CDPSession): Promise<void> {
   const q = MAPS_QUERIES[Math.floor(Math.random() * MAPS_QUERIES.length)];
   const load = s.waitForEvent("Page.loadEventFired", 12000);
@@ -388,28 +433,31 @@ async function interactMapsTab(s: CDPSession): Promise<void> {
   await sleep(rand(2000, 4000));
   await cdpScroll(s);
   await sleep(rand(1500, 3000));
-  // Click a place listing ~50% — opens the place detail panel
-  if (Math.random() < 0.5) {
-    await s.send("Runtime.evaluate", {
+
+  // Extract a place URL then open it in a new tab (~60%)
+  if (Math.random() < 0.6) {
+    const res = await s.send("Runtime.evaluate", {
       expression: `(function() {
-        const place = document.querySelector('a[href*="/maps/place/"]');
-        if (place) place.click();
+        const a = document.querySelector('a[href*="/maps/place/"]');
+        return a ? a.href : null;
       })()`,
-      awaitPromise: false,
-    });
-    await sleep(rand(4000, 8000));
-    await cdpScroll(s);
-    await sleep(rand(2000, 4000));
+      returnByValue: true,
+    }) as { result?: { value?: string | null } };
+    const placeUrl = res?.result?.value;
+    if (placeUrl) {
+      console.log(`[idle] maps → new tab: ${placeUrl.slice(0, 60)}…`);
+      await browseUrlInNewTab(placeUrl);
+    }
   }
 }
 
-// Search tabs — do an organic Google search, scroll results, click an organic result,
-// then browse the result page. Full chain: google.co.jp → result click → external site.
+// Search tabs — organic Google SERP, scroll results, open 1-2 result URLs in new tabs.
+// The idle tab stays at the SERP; the new tabs do the dwell-time browsing.
 async function interactSearchTab(s: CDPSession, label: string): Promise<void> {
   const pool = IDLE_SEARCH_QUERIES[label] ?? IDLE_SEARCH_QUERIES["search-food"];
   const q    = pool[Math.floor(Math.random() * pool.length)];
 
-  // Navigate to Google SERP for this query — referrer will be google.co.jp
+  // Navigate to Google SERP
   const load1 = s.waitForEvent("Page.loadEventFired", 15000);
   await s.send("Page.navigate", {
     url: `https://www.google.co.jp/search?q=${encodeURIComponent(q)}&hl=ja&gl=jp`,
@@ -419,43 +467,35 @@ async function interactSearchTab(s: CDPSession, label: string): Promise<void> {
   await cdpScroll(s);
   await sleep(rand(1000, 2500));
 
-  // Click the first organic result heading — this is the click-through signal Google tracks
-  const clicked = await s.send("Runtime.evaluate", {
+  // Extract organic result URLs (skip Google-owned domains)
+  const urlsRes = await s.send("Runtime.evaluate", {
     expression: `(function() {
-      // h3 inside an anchor = organic result title
-      const heading = Array.from(document.querySelectorAll('h3'))
-        .find(h => h.closest('a[href]'));
-      if (heading) { heading.closest('a[href]').click(); return true; }
-      return false;
+      return Array.from(document.querySelectorAll('h3'))
+        .filter(h => h.closest('a[href]'))
+        .map(h => h.closest('a[href]').href)
+        .filter(u => {
+          try {
+            const host = new URL(u).hostname;
+            return !host.includes('google') && u.startsWith('http');
+          } catch { return false; }
+        })
+        .slice(0, 5);
     })()`,
     returnByValue: true,
-  }) as { result?: { value?: boolean } };
+  }) as { result?: { value?: string[] } };
+  const urls = urlsRes?.result?.value ?? [];
 
-  if (clicked?.result?.value) {
-    // Wait for result page to load, then browse it
-    const load2 = s.waitForEvent("Page.loadEventFired", 15000);
-    await load2.catch(() => {});
-    await sleep(rand(4000, 9000));
-    await cdpScroll(s);
-    await sleep(rand(2000, 5000));
-    // Sometimes click one more link within the result site
-    if (Math.random() < 0.4) {
-      await s.send("Runtime.evaluate", {
-        expression: `(function() {
-          const links = Array.from(document.querySelectorAll('a[href]'))
-            .filter(a => {
-              const r = a.getBoundingClientRect();
-              return r.width > 0 && r.height > 0 && r.top > 50 && r.top < window.innerHeight - 50;
-            });
-          if (links.length > 0)
-            links[Math.floor(Math.random() * Math.min(links.length, 6))].click();
-        })()`,
-        awaitPromise: false,
-      });
-      await sleep(rand(4000, 8000));
-      await cdpScroll(s);
-      await sleep(rand(2000, 4000));
-    }
+  if (urls.length === 0) return;
+
+  // Open the first result in a new tab (CTR signal)
+  console.log(`[idle] ${label} → new tab: ${urls[0].slice(0, 60)}…`);
+  await browseUrlInNewTab(urls[0]);
+
+  // ~30%: open a second result to look like a comparison session
+  if (urls.length > 1 && Math.random() < 0.3) {
+    await sleep(rand(3000, 6000));
+    console.log(`[idle] ${label} → new tab #2: ${urls[1].slice(0, 60)}…`);
+    await browseUrlInNewTab(urls[1]);
   }
 }
 

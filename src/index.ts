@@ -74,7 +74,8 @@ app.post("/fetch", async (c) => {
 });
 
 // POST /fetch/meo  { "query": "sushi", "lat": 35.689487, "lon": 139.691711 }
-// Builds the MEO SERP URL using sll/fll parameters — works from any IP, no proxy needed.
+// Direct google.co.jp MEO URL with uule=lat,lon — same format that works cleanly
+// with a mature Chrome profile (no proxy needed after warm-up).
 app.post("/fetch/meo", async (c) => {
   const body = await c.req.json<{ query?: string; lat?: number; lon?: number }>().catch(() => null);
   const query = body?.query?.trim();
@@ -83,12 +84,10 @@ app.post("/fetch/meo", async (c) => {
   if (!query) return c.json({ error: "query is required" }, 400);
   if (!lat || !lon) return c.json({ error: "lat and lon are required" }, 400);
 
-  const span = "0.04,0.065";
   const url =
-    `https://www.google.com/search?q=${encodeURIComponent(query)}` +
+    `https://www.google.co.jp/search?q=${encodeURIComponent(query)}` +
     `&hl=ja&gl=jp&pws=0&npsic=0&rflfq=1&rldoc=1&rlha=0&sa=X&udm=1` +
-    `&fll=${lat},${lon}&fspn=${span}&fz=14` +
-    `&sll=${lat},${lon}&sspn=${span}&sz=14&stq=1&cs=0`;
+    `&uule=${lat},${lon}`;
 
   try {
     const html = await fetchUrl(url, undefined, query);
